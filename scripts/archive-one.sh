@@ -6,11 +6,12 @@ if [[ $# -lt 4 || $# -gt 5 ]]; then
   exit 2
 fi
 
-MANIFEST_ROOT="$1"
+MANIFEST_ROOT="${1//\\//}"
 TRIPLET="$2"
 TARGET_ID="$3"
 VERSION="$4"
-OUT_ROOT="${5:-${MANIFEST_ROOT}/out-release}"
+OUT_ROOT_RAW="${5:-${MANIFEST_ROOT}/out-release}"
+OUT_ROOT="${OUT_ROOT_RAW//\\//}"
 
 SRC_DIR="${MANIFEST_ROOT}/out/${TRIPLET}"
 if [[ ! -d "${SRC_DIR}" ]]; then
@@ -23,7 +24,7 @@ mkdir -p "${OUT_ROOT}"
 ASSET_BASE="ffmpeg-lgpl-decoder_${VERSION}_${TARGET_ID}_${TRIPLET}"
 ARCHIVE_PATH="${OUT_ROOT}/${ASSET_BASE}.tar.gz"
 
-tar -C "${MANIFEST_ROOT}/out" -czf "${ARCHIVE_PATH}" "${TRIPLET}"
+tar --force-local -C "${MANIFEST_ROOT}/out" -czf "${ARCHIVE_PATH}" "${TRIPLET}"
 
 if command -v sha256sum >/dev/null 2>&1; then
   checksum_line="$(sha256sum "${ARCHIVE_PATH}")"
