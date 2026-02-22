@@ -116,6 +116,20 @@ jobs:
           set -euo pipefail
           bash scripts/prepare-vcpkg.sh "${GITHUB_WORKSPACE}/.vcpkg"
 
+      - name: Preinstall PowerShell tool for vcpkg
+        if: ${{ matrix.setup_mingw == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PWSH_VERSION="7.5.4"
+          TOOLS_DIR="${GITHUB_WORKSPACE}/.vcpkg/downloads/tools/powershell-core-${PWSH_VERSION}-linux"
+          ARCHIVE_PATH="${RUNNER_TEMP}/powershell-${PWSH_VERSION}-linux-x64.tar.gz"
+          mkdir -p "${TOOLS_DIR}"
+          curl -fsSL "https://github.com/PowerShell/PowerShell/releases/download/v${PWSH_VERSION}/powershell-${PWSH_VERSION}-linux-x64.tar.gz" -o "${ARCHIVE_PATH}"
+          tar -xzf "${ARCHIVE_PATH}" -C "${TOOLS_DIR}"
+          chmod +x "${TOOLS_DIR}/pwsh"
+          "${TOOLS_DIR}/pwsh" --version
+
       - name: Resolve artifact version
         id: artifact_version
         shell: bash
