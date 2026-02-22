@@ -16,6 +16,7 @@
         "zlib"
       ]
     },
+    "libass",
     {
       "name": "ffmpeg",
       "default-features": false,

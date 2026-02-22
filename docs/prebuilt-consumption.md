@@ -1,7 +1,10 @@
-# Using prebuilt FFmpeg artifacts
+# Using prebuilt media artifacts
 
 This document shows how to consume release assets from `23doors/ffmpeg-lgpl-decoder`
 in Rust (`winit/core`) and Flutter builds.
+
+Each archive includes FFmpeg shared libraries and `libass` shared library with
+pkg-config metadata under `lib/pkgconfig`.
 
 ## Asset naming
 

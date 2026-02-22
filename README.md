@@ -8,6 +8,7 @@ This module is intentionally isolated so it can be copied to a dedicated reposit
 ## What this builds
 
 - Shared FFmpeg libraries (`avcodec`, `avformat`, `avutil`, `swresample`, `swscale`)
+- Shared `libass` library for subtitle rendering (`libass` + pkg-config metadata)
 - Slim decode-only profile (no encoders, no muxers, no ffmpeg/ffprobe binaries)
 - Hardware decode path enabled per platform (always-on profile):
   - macOS/iOS: VideoToolbox

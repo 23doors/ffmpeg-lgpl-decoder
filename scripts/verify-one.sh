@@ -111,9 +111,14 @@ case "${TRIPLET}" in
     ;;
 esac
 
+if [[ ! -f "${PREFIX}/lib/pkgconfig/libass.pc" ]]; then
+  echo "missing pkg-config file for libass in ${PREFIX}/lib/pkgconfig"
+  exit 1
+fi
+
 if [[ "${TRIPLET}" == *windows* ]]; then
   shopt -s nullglob
-  for lib in avcodec avformat avutil swresample swscale; do
+  for lib in avcodec avformat avutil swresample swscale ass; do
     matches=(
       "${PREFIX}/bin/${lib}"*.dll
       "${PREFIX}/bin/lib${lib}"*.dll
@@ -127,7 +132,7 @@ if [[ "${TRIPLET}" == *windows* ]]; then
   done
   shopt -u nullglob
 else
-  for lib in avcodec avformat avutil swresample swscale; do
+  for lib in avcodec avformat avutil swresample swscale ass; do
     if ! compgen -G "${PREFIX}/lib/lib${lib}*.so*" > /dev/null \
       && ! compgen -G "${PREFIX}/lib/lib${lib}*.dylib" > /dev/null; then
       echo "missing runtime shared library for ${lib} in ${PREFIX}/lib"
