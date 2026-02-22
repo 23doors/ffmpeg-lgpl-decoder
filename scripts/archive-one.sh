@@ -24,13 +24,12 @@ mkdir -p "${OUT_ROOT}"
 ASSET_BASE="ffmpeg-lgpl-decoder_${VERSION}_${TARGET_ID}_${TRIPLET}"
 ARCHIVE_PATH="${OUT_ROOT}/${ASSET_BASE}.tar.gz"
 
-tar_flags=()
 if tar --help 2>/dev/null | grep -q -- "--force-local"; then
   # GNU tar treats paths with ':' as remote without this flag (e.g. C:/ on Windows)
-  tar_flags+=(--force-local)
+  tar --force-local -C "${MANIFEST_ROOT}/out" -czf "${ARCHIVE_PATH}" "${TRIPLET}"
+else
+  tar -C "${MANIFEST_ROOT}/out" -czf "${ARCHIVE_PATH}" "${TRIPLET}"
 fi
-
-tar "${tar_flags[@]}" -C "${MANIFEST_ROOT}/out" -czf "${ARCHIVE_PATH}" "${TRIPLET}"
 
 if command -v sha256sum >/dev/null 2>&1; then
   checksum_line="$(sha256sum "${ARCHIVE_PATH}")"
