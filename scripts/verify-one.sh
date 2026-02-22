@@ -6,7 +6,7 @@ if [[ $# -lt 2 ]]; then
   exit 2
 fi
 
-MANIFEST_ROOT="$1"
+MANIFEST_ROOT="${1//\\//}"
 TRIPLET="$2"
 PREFIX="${MANIFEST_ROOT}/vcpkg_installed/${TRIPLET}"
 LOG_FILE="${MANIFEST_ROOT}/.buildtrees/ffmpeg/build-${TRIPLET}-rel-out.log"
@@ -112,12 +112,20 @@ case "${TRIPLET}" in
 esac
 
 if [[ "${TRIPLET}" == *windows* ]]; then
+  shopt -s nullglob
   for lib in avcodec avformat avutil swresample swscale; do
-    if ! compgen -G "${PREFIX}/bin/${lib}*.dll" > /dev/null; then
-      echo "missing runtime DLL for ${lib} in ${PREFIX}/bin"
+    matches=(
+      "${PREFIX}/bin/${lib}"*.dll
+      "${PREFIX}/bin/lib${lib}"*.dll
+      "${PREFIX}/tools/ffmpeg/bin/${lib}"*.dll
+      "${PREFIX}/tools/ffmpeg/bin/lib${lib}"*.dll
+    )
+    if (( ${#matches[@]} == 0 )); then
+      echo "missing runtime DLL for ${lib} in ${PREFIX}/bin or ${PREFIX}/tools/ffmpeg/bin"
       exit 1
     fi
   done
+  shopt -u nullglob
 else
   for lib in avcodec avformat avutil swresample swscale; do
     if ! compgen -G "${PREFIX}/lib/lib${lib}*.so*" > /dev/null \
