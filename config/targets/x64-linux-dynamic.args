@@ -1,0 +1,4 @@
+--enable-hwaccel=h264_vaapi
+--enable-hwaccel=hevc_vaapi
+--enable-hwaccel=av1_vaapi
+--enable-hwaccel=vp9_vaapi

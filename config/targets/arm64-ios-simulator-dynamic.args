@@ -1,0 +1,2 @@
+--enable-hwaccel=h264_videotoolbox
+--enable-hwaccel=hevc_videotoolbox

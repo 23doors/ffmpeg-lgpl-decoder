@@ -1,0 +1,224 @@
+name: ffmpeg-lgpl-decoder
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Publish GitHub Release assets"
+        required: false
+        default: false
+        type: boolean
+      release_tag:
+        description: "Release tag (required when publish_release=true outside tag push)"
+        required: false
+        type: string
+  push:
+    paths:
+      - ".github/workflows/ffmpeg-lgpl-decoder.yml"
+      - "config/**"
+      - "docs/**"
+      - "overlay-ports/**"
+      - "scripts/**"
+      - "templates/**"
+      - "triplets/**"
+      - "README.md"
+      - "VCPKG_COMMIT"
+      - "vcpkg.json"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.id }}
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: linux-x64
+            runs_on: ubuntu-24.04
+            triplet: x64-linux-dynamic
+          - id: windows-x64
+            runs_on: windows-2022
+            triplet: x64-windows-dynamic
+          - id: macos-arm64
+            runs_on: macos-14
+            triplet: arm64-osx-dynamic
+          - id: android-arm64
+            runs_on: ubuntu-24.04
+            triplet: arm64-android-dynamic
+            setup_android: true
+          - id: android-x64
+            runs_on: ubuntu-24.04
+            triplet: x64-android-dynamic
+            setup_android: true
+          - id: ios-arm64
+            runs_on: macos-14
+            triplet: arm64-ios-dynamic
+          - id: ios-sim-arm64
+            runs_on: macos-14
+            triplet: arm64-ios-simulator-dynamic
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Android SDK/NDK
+        if: ${{ matrix.setup_android == true }}
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        if: ${{ matrix.setup_android == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses > /dev/null
+          sdkmanager "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/27.2.12479018" >> "${GITHUB_ENV}"
+          echo "ANDROID_NDK=${ANDROID_SDK_ROOT}/ndk/27.2.12479018" >> "${GITHUB_ENV}"
+
+      - name: Prepare pinned vcpkg checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/prepare-vcpkg.sh "${GITHUB_WORKSPACE}/.vcpkg"
+
+      - name: Resolve artifact version
+        id: artifact_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            version="${GITHUB_REF_NAME}"
+          elif [[ -n "${{ inputs.release_tag }}" ]]; then
+            version="${{ inputs.release_tag }}"
+          else
+            version="dev-${GITHUB_SHA::12}"
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Bootstrap vcpkg (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${GITHUB_WORKSPACE}/.vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+
+      - name: Bootstrap vcpkg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & "${env:GITHUB_WORKSPACE}/.vcpkg/bootstrap-vcpkg.bat" -disableMetrics
+
+      - name: Build FFmpeg LGPL decoder bundle
+        shell: bash
+        env:
+          VCPKG_DISABLE_METRICS: "1"
+        run: |
+          set -euo pipefail
+          bash scripts/build-one.sh \
+            "${GITHUB_WORKSPACE}/.vcpkg" \
+            "${{ matrix.triplet }}" \
+            "${GITHUB_WORKSPACE}"
+
+      - name: Verify FFmpeg build profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/verify-one.sh \
+            "${GITHUB_WORKSPACE}" \
+            "${{ matrix.triplet }}"
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/package-one.sh \
+            "${GITHUB_WORKSPACE}" \
+            "${{ matrix.triplet }}" \
+            "${GITHUB_WORKSPACE}/out"
+
+      - name: Archive artifact payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/archive-one.sh \
+            "${GITHUB_WORKSPACE}" \
+            "${{ matrix.triplet }}" \
+            "${{ matrix.id }}" \
+            "${{ steps.artifact_version.outputs.version }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-lgpl-${{ matrix.id }}
+          path: |
+            out-release/*.tar.gz
+            out-release/*.sha256
+          if-no-files-found: error
+
+  release:
+    name: publish-release
+    runs-on: ubuntu-24.04
+    needs: build
+    if: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publish_release == true) }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: release_tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            tag="${GITHUB_REF_NAME}"
+          elif [[ -n "${{ inputs.release_tag }}" ]]; then
+            tag="${{ inputs.release_tag }}"
+          else
+            echo "publish_release=true requires release_tag when not running on tag push"
+            exit 1
+          fi
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: .release-downloads
+          pattern: ffmpeg-lgpl-*
+
+      - name: Prepare release assets + checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/prepare-release-assets.sh \
+            ".release-downloads" \
+            "release-assets"
+
+      - name: Render release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/render-release-notes.sh \
+            "release-assets" \
+            "${{ steps.release_tag.outputs.tag }}" \
+            "release-notes.md"
+
+      - name: Publish GitHub release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.release_tag.outputs.tag }}"
+          if gh release view "${TAG}" > /dev/null 2>&1; then
+            gh release upload "${TAG}" release-assets/* --clobber
+          else
+            gh release create "${TAG}" \
+              --target "${GITHUB_SHA}" \
+              --title "${TAG}" \
+              --notes-file "release-notes.md" \
+              release-assets/*
+          fi

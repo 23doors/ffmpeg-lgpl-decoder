@@ -1,0 +1,4 @@
+--enable-decoder=h264_mediacodec
+--enable-decoder=hevc_mediacodec
+--enable-decoder=av1_mediacodec
+--enable-decoder=vp9_mediacodec

@@ -1,0 +1,48 @@
+// Apply from android/build.gradle:
+// apply from: "../path/to/fetch_ffmpeg.gradle"
+
+def ffmpegRepo = System.getenv("FFMPEG_RELEASE_REPO") ?: "23doors/ffmpeg-lgpl-decoder"
+def ffmpegTag = System.getenv("FFMPEG_RELEASE_TAG") ?: "v0.1.0"
+def ffmpegCacheRoot = file("${rootDir}/../third_party/ffmpeg")
+
+def ffmpegAndroidTargets = [
+  [id: "android-arm64", triplet: "arm64-android-dynamic", abi: "arm64-v8a"],
+  [id: "android-x64", triplet: "x64-android-dynamic", abi: "x86_64"],
+]
+
+tasks.register("fetchFfmpegPrebuiltAndroid") {
+  doLast {
+    ffmpegCacheRoot.mkdirs()
+
+    ffmpegAndroidTargets.each { target ->
+      def assetName = "ffmpeg-lgpl-decoder_${ffmpegTag}_${target.id}_${target.triplet}.tar.gz"
+      def url = "https://github.com/${ffmpegRepo}/releases/download/${ffmpegTag}/${assetName}"
+      def archiveFile = new File(ffmpegCacheRoot, assetName)
+      def extractedTripletDir = new File(ffmpegCacheRoot, target.triplet)
+
+      if (!archiveFile.exists()) {
+        println "Downloading ${url}"
+        new URL(url).withInputStream { input ->
+          archiveFile.withOutputStream { output ->
+            output << input
+          }
+        }
+      }
+
+      if (!extractedTripletDir.exists()) {
+        exec {
+          commandLine "tar", "-xzf", archiveFile.absolutePath, "-C", ffmpegCacheRoot.absolutePath
+        }
+      }
+
+      copy {
+        from(new File(extractedTripletDir, "lib")) {
+          include "*.so"
+        }
+        into(file("${projectDir}/src/main/jniLibs/${target.abi}"))
+      }
+    }
+  }
+}
+
+preBuild.dependsOn(tasks.named("fetchFfmpegPrebuiltAndroid"))

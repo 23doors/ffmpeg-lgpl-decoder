@@ -1,0 +1,9 @@
+.vcpkg/
+.buildtrees/
+.packages/
+vcpkg_installed/
+out/
+out-release/
+.release-downloads/
+release-assets/
+release-notes.md

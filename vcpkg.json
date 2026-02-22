@@ -1,0 +1,28 @@
+{
+  "name": "ffmpeg-lgpl-decoder",
+  "version-string": "0.1.0",
+  "builtin-baseline": "05442024c3fda64320bd25d2251cc9807b84fb6f",
+  "dependencies": [
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": [
+        "avcodec",
+        "avformat",
+        "swresample",
+        "swscale",
+        "openssl",
+        "xml2",
+        "zlib"
+      ]
+    },
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": [
+        "vaapi"
+      ],
+      "platform": "linux"
+    }
+  ]
+}
