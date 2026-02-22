@@ -95,7 +95,7 @@ case "${TRIPLET}" in
     assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_H264_VIDEOTOOLBOX_HWACCEL 1
     assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_HEVC_VIDEOTOOLBOX_HWACCEL 1
     ;;
-  x64-windows-dynamic)
+  x64-windows-dynamic|x64-windows-gnu-dynamic)
     assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_H264_D3D11VA_HWACCEL 1
     assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_HEVC_D3D11VA_HWACCEL 1
     assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_H264_DXVA2_HWACCEL 1
@@ -105,7 +105,7 @@ case "${TRIPLET}" in
     assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_H264_VAAPI_HWACCEL 1
     assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_HEVC_VAAPI_HWACCEL 1
     ;;
-  arm64-android-dynamic|x64-android-dynamic)
+  arm64-android-dynamic|arm-neon-android-dynamic|x64-android-dynamic)
     assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_H264_MEDIACODEC_DECODER 1
     assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_HEVC_MEDIACODEC_DECODER 1
     ;;

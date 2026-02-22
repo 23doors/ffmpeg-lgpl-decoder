@@ -29,8 +29,10 @@ automatically by `scripts/build-one.sh` based on triplet.
 
 - linux-x64
 - windows-x64
+- windows-gnu-x64
 - macos-arm64
 - android-arm64
+- android-armv7
 - android-x64
 - ios-arm64
 - ios-sim-arm64

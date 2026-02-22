@@ -43,12 +43,20 @@ jobs:
           - id: windows-x64
             runs_on: windows-2022
             triplet: x64-windows-dynamic
+          - id: windows-gnu-x64
+            runs_on: ubuntu-24.04
+            triplet: x64-windows-gnu-dynamic
+            setup_mingw: true
           - id: macos-arm64
             runs_on: macos-14
             triplet: arm64-osx-dynamic
           - id: android-arm64
             runs_on: ubuntu-24.04
             triplet: arm64-android-dynamic
+            setup_android: true
+          - id: android-armv7
+            runs_on: ubuntu-24.04
+            triplet: arm-neon-android-dynamic
             setup_android: true
           - id: android-x64
             runs_on: ubuntu-24.04
@@ -71,6 +79,13 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y nasm
+
+      - name: Install MinGW toolchain
+        if: ${{ matrix.setup_mingw == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64
 
       - name: Install Linux VAAPI dependencies
         if: ${{ runner.os == 'Linux' && matrix.id == 'linux-x64' }}

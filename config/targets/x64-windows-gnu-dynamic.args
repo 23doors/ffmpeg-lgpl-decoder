@@ -1,0 +1,8 @@
+--enable-hwaccel=h264_d3d11va
+--enable-hwaccel=hevc_d3d11va
+--enable-hwaccel=av1_d3d11va
+--enable-hwaccel=vp9_d3d11va
+--enable-hwaccel=h264_dxva2
+--enable-hwaccel=hevc_dxva2
+--enable-hwaccel=av1_dxva2
+--enable-hwaccel=vp9_dxva2

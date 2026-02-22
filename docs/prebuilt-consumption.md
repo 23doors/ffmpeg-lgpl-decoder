@@ -23,8 +23,10 @@ Checksums:
 
 - Linux x64: `target-id=linux-x64`, `triplet=x64-linux-dynamic`
 - Windows x64: `target-id=windows-x64`, `triplet=x64-windows-dynamic`
+- Windows x64 (GNU): `target-id=windows-gnu-x64`, `triplet=x64-windows-gnu-dynamic`
 - macOS arm64: `target-id=macos-arm64`, `triplet=arm64-osx-dynamic`
 - Android arm64: `target-id=android-arm64`, `triplet=arm64-android-dynamic`
+- Android armv7: `target-id=android-armv7`, `triplet=arm-neon-android-dynamic`
 - Android x64: `target-id=android-x64`, `triplet=x64-android-dynamic`
 - iOS arm64: `target-id=ios-arm64`, `triplet=arm64-ios-dynamic`
 - iOS simulator arm64: `target-id=ios-sim-arm64`, `triplet=arm64-ios-simulator-dynamic`
@@ -68,7 +70,7 @@ Use the Gradle template:
 
 - `templates/flutter/android/fetch_ffmpeg.gradle`
 
-It downloads `android-arm64` + `android-x64` archives and copies `.so` files into
+It downloads `android-arm64` + `android-armv7` + `android-x64` archives and copies `.so` files into
 `src/main/jniLibs/<abi>`.
 
 Set:
