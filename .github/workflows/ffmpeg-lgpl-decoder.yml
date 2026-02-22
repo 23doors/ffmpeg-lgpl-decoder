@@ -78,7 +78,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y nasm
+          sudo apt-get install -y nasm autoconf autoconf-archive automake libtool
 
       - name: Install MinGW toolchain
         if: ${{ matrix.setup_mingw == true }}
