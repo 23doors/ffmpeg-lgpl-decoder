@@ -11,6 +11,8 @@
         "avformat",
         "swresample",
         "swscale",
+        "dav1d",
+        "opus",
         "openssl",
         "xml2",
         "zlib"
