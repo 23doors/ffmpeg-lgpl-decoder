@@ -68,11 +68,11 @@
 --enable-demuxer=webm_dash_manifest
 --enable-demuxer=image2
 --enable-demuxer=image2pipe
---enable-demuxer=jpeg_pipe
---enable-demuxer=png_pipe
---enable-demuxer=bmp_pipe
---enable-demuxer=gif_pipe
---enable-demuxer=webp_pipe
+--enable-demuxer=image_jpeg_pipe
+--enable-demuxer=image_png_pipe
+--enable-demuxer=image_bmp_pipe
+--enable-demuxer=image_gif_pipe
+--enable-demuxer=image_webp_pipe
 
 --enable-parser=h264
 --enable-parser=hevc
@@ -86,10 +86,8 @@
 --enable-parser=aac
 --enable-parser=aac_latm
 --enable-parser=ac3
---enable-parser=eac3
 --enable-parser=dca
 --enable-parser=mlp
---enable-parser=truehd
 --enable-parser=opus
 --enable-parser=vorbis
 --enable-parser=mpegaudio
