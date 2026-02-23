@@ -16,12 +16,21 @@ mkdir -p "${OUTPUT_ROOT}"
 download_one() {
   local target_id="$1"
   local triplet="$2"
+  local required="${3:-true}"
   local asset_name="ffmpeg-lgpl-decoder_${RELEASE_TAG}_${target_id}_${triplet}.tar.gz"
   local url="https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}/${asset_name}"
   local archive_path="${OUTPUT_ROOT}/${asset_name}"
 
   if [[ ! -f "${archive_path}" ]]; then
-    curl -fL "${url}" -o "${archive_path}"
+    if ! curl -fL "${url}" -o "${archive_path}"; then
+      rm -f "${archive_path}"
+      if [[ "${required}" == "false" ]]; then
+        echo "warning: optional archive not found: ${asset_name}" >&2
+        return 0
+      fi
+      echo "error: failed to download required archive: ${asset_name}" >&2
+      return 1
+    fi
   fi
 
   if [[ ! -d "${OUTPUT_ROOT}/${triplet}" ]]; then
@@ -30,6 +39,7 @@ download_one() {
 }
 
 download_one "macos-arm64" "arm64-osx-dynamic"
+download_one "macos-x64" "x64-osx-dynamic" "false"
 download_one "ios-arm64" "arm64-ios-dynamic"
 download_one "ios-sim-arm64" "arm64-ios-simulator-dynamic"
 

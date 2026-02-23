@@ -28,6 +28,7 @@ Checksums:
 - Windows x64: `target-id=windows-x64`, `triplet=x64-windows-dynamic`
 - Windows x64 (GNU): `target-id=windows-gnu-x64`, `triplet=x64-windows-gnu-dynamic`
 - macOS arm64: `target-id=macos-arm64`, `triplet=arm64-osx-dynamic`
+- macOS x64: `target-id=macos-x64`, `triplet=x64-osx-dynamic`
 - Android arm64: `target-id=android-arm64`, `triplet=arm64-android-dynamic`
 - Android armv7: `target-id=android-armv7`, `triplet=arm-neon-android-dynamic`
 - Android x64: `target-id=android-x64`, `triplet=x64-android-dynamic`
@@ -91,6 +92,9 @@ bash templates/flutter/apple/fetch_ffmpeg_apple.sh \
   v0.1.0 \
   third_party/ffmpeg
 ```
+
+The helper fetches `macos-arm64` and attempts `macos-x64` when that asset exists
+for the selected release tag.
 
 For iOS distribution, prefer static libs or XCFramework packaging.
 Current artifacts are dynamic-library oriented.

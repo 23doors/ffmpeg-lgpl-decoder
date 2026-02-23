@@ -138,7 +138,7 @@ assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_SAMI_DEMUXER 1
 assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_SUBVIEWER_DEMUXER 1
 
 case "${TRIPLET}" in
-  arm64-osx-dynamic)
+  arm64-osx-dynamic|x64-osx-dynamic)
     assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_H264_VIDEOTOOLBOX_HWACCEL 1
     assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_HEVC_VIDEOTOOLBOX_HWACCEL 1
     ;;

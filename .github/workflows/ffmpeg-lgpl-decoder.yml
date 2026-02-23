@@ -50,6 +50,9 @@ jobs:
           - id: macos-arm64
             runs_on: macos-14
             triplet: arm64-osx-dynamic
+          - id: macos-x64
+            runs_on: macos-13
+            triplet: x64-osx-dynamic
           - id: android-arm64
             runs_on: ubuntu-24.04
             triplet: arm64-android-dynamic

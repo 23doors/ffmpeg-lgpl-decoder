@@ -32,6 +32,7 @@ automatically by `scripts/build-one.sh` based on triplet.
 - windows-x64
 - windows-gnu-x64
 - macos-arm64
+- macos-x64
 - android-arm64
 - android-armv7
 - android-x64
