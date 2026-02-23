@@ -17,10 +17,10 @@ This module is intentionally isolated so it can be copied to a dedicated reposit
   - Android: MediaCodec decoders
 - Decoder/protocol/demuxer parser whitelist focused on playback:
   - video: AV1, HEVC, H.264, VP9/VP8, MPEG-1/2, MPEG-4 Part 2, VC-1/WMV3, Theora, ProRes
-  - audio: AAC, MP2/MP3, AC-3, E-AC-3, DTS (dca), TrueHD/MLP, Opus, Vorbis, FLAC, ALAC, APE, WavPack, WMA, common PCM (LE/BE, int/float)
+  - audio: AAC/AAC-LATM, MP2/MP3, AC-3, E-AC-3, DTS (dca), TrueHD/MLP, Opus, Vorbis, FLAC, ALAC, APE, WavPack, WMA, common PCM (LE/BE, int/float, a-law, mu-law)
   - images: MJPEG, PNG, BMP, GIF, WebP
-  - subtitles: SubRip, ASS, MOV text, WebVTT, PGS, DVB, DVD, XSUB
-  - streaming/containers: MKV/Matroska, MOV/MP4, MPEG-TS/PS, AVI, ASF, FLV, WAV, OGG, FLAC, raw AC-3/E-AC-3/DTS, HLS (`m3u8`), DASH (`mpd`), RTSP/RTP/SDP
+  - subtitles: SubRip, ASS/SSA, MOV text, WebVTT, PGS, DVB, DVD, XSUB, MicroDVD/MPL2/PJS/SAMI/STL/SubViewer/VPlayer/JACOsub/RealText
+  - streaming/containers: MKV/Matroska/WebM, MOV/MP4, MPEG-TS/PS, AVI, ASF, FLV, MXF, WAV/AIFF/AU/CAF, OGG, FLAC, raw AC-3/E-AC-3/DTS, HLS (`m3u8`), DASH (`mpd`), RTSP/RTP/SDP
   - protocols: file/pipe/http/https/rtmp/rtmps/rtmpt/rtmpe/tcp/tls/udp/rtp/crypto
 
 Platform-specific hardware options live in `config/targets/*.args` and are appended
