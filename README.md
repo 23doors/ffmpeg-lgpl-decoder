@@ -16,12 +16,12 @@ This module is intentionally isolated so it can be copied to a dedicated reposit
   - Linux: VAAPI
   - Android: MediaCodec decoders
 - Decoder/protocol/demuxer parser whitelist focused on playback:
-  - video: AV1, HEVC, H.264, VP9
-  - audio: AAC, Opus, Vorbis
+  - video: AV1, HEVC, H.264, VP9/VP8, MPEG-1/2, MPEG-4 Part 2, VC-1/WMV3, Theora, ProRes
+  - audio: AAC, MP2/MP3, AC-3, E-AC-3, DTS (dca), TrueHD/MLP, Opus, Vorbis, FLAC, ALAC, APE, WavPack, WMA, common PCM (LE/BE, int/float)
   - images: MJPEG, PNG, BMP, GIF, WebP
-  - subtitles: SubRip, ASS, MOV text, WebVTT, PGS
-  - streaming: MKV/Matroska, HLS (`m3u8`), DASH (`mpd`), HTTPS
-  - protocols: file/pipe/http/https/tcp/tls/udp/crypto
+  - subtitles: SubRip, ASS, MOV text, WebVTT, PGS, DVB, DVD, XSUB
+  - streaming/containers: MKV/Matroska, MOV/MP4, MPEG-TS/PS, AVI, ASF, FLV, WAV, OGG, FLAC, raw AC-3/E-AC-3/DTS, HLS (`m3u8`), DASH (`mpd`), RTSP/RTP/SDP
+  - protocols: file/pipe/http/https/rtmp/rtmps/rtmpt/rtmpe/tcp/tls/udp/rtp/crypto
 
 Platform-specific hardware options live in `config/targets/*.args` and are appended
 automatically by `scripts/build-one.sh` based on triplet.
