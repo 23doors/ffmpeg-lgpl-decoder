@@ -83,6 +83,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y nasm autoconf autoconf-archive automake libtool
 
+      - name: Install macOS host build dependencies
+        if: ${{ runner.os == 'macOS' && matrix.id == 'macos-x64' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install nasm
+
       - name: Install MinGW toolchain
         if: ${{ matrix.setup_mingw == true }}
         shell: bash
