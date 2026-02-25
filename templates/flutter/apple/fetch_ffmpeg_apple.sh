@@ -42,6 +42,7 @@ download_one "macos-arm64" "arm64-osx-dynamic"
 download_one "macos-x64" "x64-osx-dynamic" "false"
 download_one "ios-arm64" "arm64-ios-dynamic"
 download_one "ios-sim-arm64" "arm64-ios-simulator-dynamic"
+download_one "ios-sim-x64" "x64-ios-simulator-dynamic" "false"
 
 echo "downloaded Apple prebuilts into ${OUTPUT_ROOT}"
 echo "note: for iOS app distribution, prefer static libs/XCFramework packaging"

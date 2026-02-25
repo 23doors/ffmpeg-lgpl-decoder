@@ -29,7 +29,9 @@ automatically by `scripts/build-one.sh` based on triplet.
 ## CI matrix
 
 - linux-x64
+- linux-arm64
 - windows-x64
+- windows-arm64
 - windows-gnu-x64
 - macos-arm64
 - macos-x64
@@ -38,6 +40,7 @@ automatically by `scripts/build-one.sh` based on triplet.
 - android-x64
 - ios-arm64
 - ios-sim-arm64
+- ios-sim-x64
 
 Workflow file: `.github/workflows/ffmpeg-lgpl-decoder.yml`
 

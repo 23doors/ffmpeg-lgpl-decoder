@@ -40,9 +40,15 @@ jobs:
           - id: linux-x64
             runs_on: ubuntu-24.04
             triplet: x64-linux-dynamic
+          - id: linux-arm64
+            runs_on: ubuntu-24.04-arm
+            triplet: arm64-linux-dynamic
           - id: windows-x64
             runs_on: windows-2022
             triplet: x64-windows-dynamic
+          - id: windows-arm64
+            runs_on: windows-2022
+            triplet: arm64-windows-dynamic
           - id: windows-gnu-x64
             runs_on: ubuntu-24.04
             triplet: x64-windows-gnu-dynamic
@@ -71,6 +77,9 @@ jobs:
           - id: ios-sim-arm64
             runs_on: macos-14
             triplet: arm64-ios-simulator-dynamic
+          - id: ios-sim-x64
+            runs_on: macos-15-intel
+            triplet: x64-ios-simulator-dynamic
 
     steps:
       - uses: actions/checkout@v4
@@ -84,7 +93,7 @@ jobs:
           sudo apt-get install -y nasm autoconf autoconf-archive automake libtool
 
       - name: Install macOS host build dependencies
-        if: ${{ runner.os == 'macOS' && matrix.id == 'macos-x64' }}
+        if: ${{ runner.os == 'macOS' && (matrix.id == 'macos-x64' || matrix.id == 'ios-sim-x64') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -98,7 +107,7 @@ jobs:
           sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64
 
       - name: Install Linux VAAPI dependencies
-        if: ${{ runner.os == 'Linux' && matrix.id == 'linux-x64' }}
+        if: ${{ runner.os == 'Linux' && (matrix.triplet == 'x64-linux-dynamic' || matrix.triplet == 'arm64-linux-dynamic') }}
         shell: bash
         run: |
           set -euo pipefail

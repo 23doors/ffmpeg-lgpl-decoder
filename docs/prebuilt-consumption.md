@@ -25,7 +25,9 @@ Checksums:
 ## Target mapping
 
 - Linux x64: `target-id=linux-x64`, `triplet=x64-linux-dynamic`
+- Linux arm64: `target-id=linux-arm64`, `triplet=arm64-linux-dynamic`
 - Windows x64: `target-id=windows-x64`, `triplet=x64-windows-dynamic`
+- Windows arm64: `target-id=windows-arm64`, `triplet=arm64-windows-dynamic`
 - Windows x64 (GNU): `target-id=windows-gnu-x64`, `triplet=x64-windows-gnu-dynamic`
 - macOS arm64: `target-id=macos-arm64`, `triplet=arm64-osx-dynamic`
 - macOS x64: `target-id=macos-x64`, `triplet=x64-osx-dynamic`
@@ -34,6 +36,7 @@ Checksums:
 - Android x64: `target-id=android-x64`, `triplet=x64-android-dynamic`
 - iOS arm64: `target-id=ios-arm64`, `triplet=arm64-ios-dynamic`
 - iOS simulator arm64: `target-id=ios-sim-arm64`, `triplet=arm64-ios-simulator-dynamic`
+- iOS simulator x64: `target-id=ios-sim-x64`, `triplet=x64-ios-simulator-dynamic`
 
 ## Rust (winit/core)
 
@@ -93,8 +96,8 @@ bash templates/flutter/apple/fetch_ffmpeg_apple.sh \
   third_party/ffmpeg
 ```
 
-The helper fetches `macos-arm64` and attempts `macos-x64` when that asset exists
-for the selected release tag.
+The helper fetches `macos-arm64`, `ios-arm64`, `ios-sim-arm64` and attempts
+`macos-x64` + `ios-sim-x64` when those assets exist for the selected release tag.
 
 For iOS distribution, prefer static libs or XCFramework packaging.
 Current artifacts are dynamic-library oriented.
