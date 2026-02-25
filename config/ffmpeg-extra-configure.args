@@ -146,6 +146,7 @@
 --enable-decoder=webp
 
 --enable-decoder=subrip
+--enable-decoder=text
 --enable-decoder=ass
 --enable-decoder=ssa
 --enable-decoder=movtext
