@@ -55,6 +55,35 @@ assert_define_in() {
   fi
 }
 
+assert_any_define_in() {
+  local file="$1"
+  local expected="$2"
+  shift 2
+
+  local macro
+  local line
+  local value
+  local found=0
+
+  for macro in "$@"; do
+    line="$(grep -E "^#define ${macro} " "${file}" | tail -n 1 || true)"
+    if [[ -n "${line}" ]]; then
+      found=1
+      value="${line##* }"
+      if [[ "${value}" == "${expected}" ]]; then
+        return
+      fi
+    fi
+  done
+
+  if [[ "${found}" == 0 ]]; then
+    echo "missing any of [$*] in ${file}"
+  else
+    echo "none of [$*] equals ${expected} in ${file}"
+  fi
+  exit 1
+}
+
 assert_define_in "${CONFIG_H}" CONFIG_ENCODERS 0
 assert_define_in "${CONFIG_H}" CONFIG_DECODERS 1
 assert_define_in "${CONFIG_H}" CONFIG_MUXERS 0
@@ -115,8 +144,8 @@ assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_VPLAYER_DECODER 1
 
 assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_AAC_LATM_PARSER 1
 
-assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_ABUFFER_FILTER 1
-assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_ABUFFERSINK_FILTER 1
+assert_any_define_in "${CONFIG_COMPONENTS_H}" 1 CONFIG_ASRC_ABUFFER_FILTER CONFIG_ABUFFER_FILTER
+assert_any_define_in "${CONFIG_COMPONENTS_H}" 1 CONFIG_ASINK_ABUFFER_FILTER CONFIG_ABUFFERSINK_FILTER
 assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_ATEMPO_FILTER 1
 
 assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_HTTP_PROTOCOL 1
