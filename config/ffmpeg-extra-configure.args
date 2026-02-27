@@ -10,6 +10,8 @@
 --enable-swresample
 --enable-swscale
 
+--enable-filter=asrc_abuffer
+--enable-filter=asink_abuffer
 --enable-filter=abuffer
 --enable-filter=abuffersink
 --enable-filter=atempo
