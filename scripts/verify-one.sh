@@ -61,6 +61,7 @@ assert_define_in "${CONFIG_H}" CONFIG_MUXERS 0
 assert_define_in "${CONFIG_H}" CONFIG_DEMUXERS 1
 assert_define_in "${CONFIG_H}" CONFIG_PROTOCOLS 1
 assert_define_in "${CONFIG_H}" CONFIG_PARSERS 1
+assert_define_in "${CONFIG_H}" CONFIG_FILTERS 1
 
 assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_H264_DECODER 1
 assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_HEVC_DECODER 1
@@ -113,6 +114,10 @@ assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_SUBVIEWER_DECODER 1
 assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_VPLAYER_DECODER 1
 
 assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_AAC_LATM_PARSER 1
+
+assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_ABUFFER_FILTER 1
+assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_ABUFFERSINK_FILTER 1
+assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_ATEMPO_FILTER 1
 
 assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_HTTP_PROTOCOL 1
 assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_HTTPS_PROTOCOL 1
@@ -187,9 +192,14 @@ if [[ ! -f "${PREFIX}/lib/pkgconfig/libass.pc" ]]; then
   exit 1
 fi
 
+if [[ ! -f "${PREFIX}/lib/pkgconfig/libavfilter.pc" ]]; then
+  echo "missing pkg-config file for libavfilter in ${PREFIX}/lib/pkgconfig"
+  exit 1
+fi
+
 if [[ "${TRIPLET}" == *windows* ]]; then
   shopt -s nullglob
-  for lib in avcodec avformat avutil swresample swscale ass; do
+  for lib in avcodec avfilter avformat avutil swresample swscale ass; do
     matches=(
       "${PREFIX}/bin/${lib}"*.dll
       "${PREFIX}/bin/lib${lib}"*.dll
@@ -203,7 +213,7 @@ if [[ "${TRIPLET}" == *windows* ]]; then
   done
   shopt -u nullglob
 else
-  for lib in avcodec avformat avutil swresample swscale ass; do
+  for lib in avcodec avfilter avformat avutil swresample swscale ass; do
     if ! compgen -G "${PREFIX}/lib/lib${lib}*.so*" > /dev/null \
       && ! compgen -G "${PREFIX}/lib/lib${lib}*.dylib" > /dev/null; then
       echo "missing runtime shared library for ${lib} in ${PREFIX}/lib"

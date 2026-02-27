@@ -3,12 +3,16 @@
 
 --disable-programs
 --disable-avdevice
---disable-avfilter
+--enable-avfilter
 
 --enable-avcodec
 --enable-avformat
 --enable-swresample
 --enable-swscale
+
+--enable-filter=abuffer
+--enable-filter=abuffersink
+--enable-filter=atempo
 
 --enable-protocol=file
 --enable-protocol=pipe
