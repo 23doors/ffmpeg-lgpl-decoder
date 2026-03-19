@@ -1,7 +1,7 @@
 {
   "name": "ffmpeg-lgpl-decoder",
   "version-string": "0.1.0",
-  "builtin-baseline": "05442024c3fda64320bd25d2251cc9807b84fb6f",
+  "builtin-baseline": "fc349a7b35348173d4d24621ae04ad80e2375957",
   "dependencies": [
     {
       "name": "ffmpeg",
