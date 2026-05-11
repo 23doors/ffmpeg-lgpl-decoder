@@ -119,6 +119,40 @@ assert_apple_dylib_deployment_target() {
   shopt -u nullglob
 }
 
+find_llvm_readelf() {
+  if command -v llvm-readelf >/dev/null 2>&1; then
+    command -v llvm-readelf
+    return
+  fi
+
+  local sdk_root="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-${ANDROID_NDK:-${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}}}}"
+  if [[ -n "${sdk_root}" && -d "${sdk_root}" ]]; then
+    find "${sdk_root}" -path '*/toolchains/llvm/prebuilt/*/bin/llvm-readelf' -type f | sort -r | head -n 1
+  fi
+}
+
+assert_android_dylib_api_level() {
+  local expected="$1"
+  local readelf
+  readelf="$(find_llvm_readelf)"
+  if [[ -z "${readelf}" ]]; then
+    echo "llvm-readelf is required to verify Android API level"
+    exit 1
+  fi
+
+  local so api
+  shopt -s nullglob
+  for so in "${PREFIX}/lib/"*.so*; do
+    [[ -f "${so}" ]] || continue
+    api="$("${readelf}" -n "${so}" 2>/dev/null | awk '/NT_GNU_ABI_TAG/{seen=1} seen && /OS: Android, ABI:/{print $NF; seen=0}' | tail -n 1)"
+    if [[ -n "${api}" && "${api}" != "${expected}" ]]; then
+      echo "Android API level mismatch in ${so}: ABI tag ${api}, expected ${expected}"
+      exit 1
+    fi
+  done
+  shopt -u nullglob
+}
+
 assert_define_in "${CONFIG_H}" CONFIG_ENCODERS 0
 assert_define_in "${CONFIG_H}" CONFIG_DECODERS 1
 assert_define_in "${CONFIG_H}" CONFIG_MUXERS 0
@@ -254,6 +288,7 @@ case "${TRIPLET}" in
   arm64-android-dynamic|arm-neon-android-dynamic|x64-android-dynamic)
     assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_H264_MEDIACODEC_DECODER 1
     assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_HEVC_MEDIACODEC_DECODER 1
+    assert_android_dylib_api_level 23
     ;;
 esac
 
