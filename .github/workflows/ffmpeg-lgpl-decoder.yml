@@ -125,9 +125,9 @@ jobs:
           set +o pipefail
           yes | sdkmanager --licenses > /dev/null
           set -o pipefail
-          sdkmanager "ndk;27.2.12479018"
-          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/27.2.12479018" >> "${GITHUB_ENV}"
-          echo "ANDROID_NDK=${ANDROID_SDK_ROOT}/ndk/27.2.12479018" >> "${GITHUB_ENV}"
+          sdkmanager "ndk;28.2.13676358"
+          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/28.2.13676358" >> "${GITHUB_ENV}"
+          echo "ANDROID_NDK=${ANDROID_SDK_ROOT}/ndk/28.2.13676358" >> "${GITHUB_ENV}"
 
       - name: Prepare pinned vcpkg checkout
         shell: bash
