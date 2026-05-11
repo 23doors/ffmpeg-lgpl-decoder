@@ -268,7 +268,7 @@ case "${TRIPLET}" in
   arm64-osx-dynamic|x64-osx-dynamic)
     assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_H264_VIDEOTOOLBOX_HWACCEL 1
     assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_HEVC_VIDEOTOOLBOX_HWACCEL 1
-    assert_apple_dylib_deployment_target 10.14
+    assert_apple_dylib_deployment_target 11.0
     ;;
   arm64-ios-dynamic|arm64-ios-simulator-dynamic|x64-ios-simulator-dynamic)
     assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_H264_VIDEOTOOLBOX_HWACCEL 1
