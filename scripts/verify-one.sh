@@ -84,6 +84,41 @@ assert_any_define_in() {
   exit 1
 }
 
+version_to_number() {
+  local version="$1"
+  local major minor patch
+  IFS=. read -r major minor patch <<< "${version}"
+  major="${major:-0}"
+  minor="${minor:-0}"
+  patch="${patch:-0}"
+  echo $((10#${major} * 10000 + 10#${minor} * 100 + 10#${patch}))
+}
+
+assert_apple_dylib_deployment_target() {
+  local expected="$1"
+  local expected_number
+  expected_number="$(version_to_number "${expected}")"
+
+  if ! command -v otool >/dev/null 2>&1; then
+    echo "otool is required to verify Apple deployment target"
+    exit 1
+  fi
+
+  local dylib minos minos_number
+  shopt -s nullglob
+  for dylib in "${PREFIX}/lib/"*.dylib; do
+    while IFS= read -r minos; do
+      [[ -z "${minos}" ]] && continue
+      minos_number="$(version_to_number "${minos}")"
+      if (( minos_number > expected_number )); then
+        echo "Apple deployment target too new in ${dylib}: minos ${minos}, expected <= ${expected}"
+        exit 1
+      fi
+    done < <(otool -l "${dylib}" | awk '/LC_BUILD_VERSION/{seen=1} seen && /minos/{print $2; seen=0}')
+  done
+  shopt -u nullglob
+}
+
 assert_define_in "${CONFIG_H}" CONFIG_ENCODERS 0
 assert_define_in "${CONFIG_H}" CONFIG_DECODERS 1
 assert_define_in "${CONFIG_H}" CONFIG_MUXERS 0
@@ -199,10 +234,12 @@ case "${TRIPLET}" in
   arm64-osx-dynamic|x64-osx-dynamic)
     assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_H264_VIDEOTOOLBOX_HWACCEL 1
     assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_HEVC_VIDEOTOOLBOX_HWACCEL 1
+    assert_apple_dylib_deployment_target 10.14
     ;;
   arm64-ios-dynamic|arm64-ios-simulator-dynamic|x64-ios-simulator-dynamic)
     assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_H264_VIDEOTOOLBOX_HWACCEL 1
     assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_HEVC_VIDEOTOOLBOX_HWACCEL 1
+    assert_apple_dylib_deployment_target 11.0
     ;;
   x64-windows-dynamic|arm64-windows-dynamic|x64-windows-gnu-dynamic)
     assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_H264_D3D11VA_HWACCEL 1
