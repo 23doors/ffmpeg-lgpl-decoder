@@ -84,6 +84,23 @@ assert_any_define_in() {
   exit 1
 }
 
+assert_optimized_asm_for_triplet() {
+  case "${TRIPLET}" in
+    arm-neon-android-dynamic)
+      assert_define_in "${CONFIG_H}" ARCH_ARM 1
+      assert_define_in "${CONFIG_H}" HAVE_NEON 1
+      ;;
+    arm64-*)
+      assert_define_in "${CONFIG_H}" ARCH_AARCH64 1
+      assert_define_in "${CONFIG_H}" HAVE_NEON 1
+      ;;
+    x64-*)
+      assert_define_in "${CONFIG_H}" ARCH_X86_64 1
+      assert_define_in "${CONFIG_H}" HAVE_X86ASM 1
+      ;;
+  esac
+}
+
 version_to_number() {
   local version="$1"
   local major minor patch
@@ -185,6 +202,8 @@ assert_define_in "${CONFIG_H}" CONFIG_DEMUXERS 1
 assert_define_in "${CONFIG_H}" CONFIG_PROTOCOLS 1
 assert_define_in "${CONFIG_H}" CONFIG_PARSERS 1
 assert_define_in "${CONFIG_H}" CONFIG_FILTERS 1
+
+assert_optimized_asm_for_triplet
 
 assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_H264_DECODER 1
 assert_define_in "${CONFIG_COMPONENTS_H}" CONFIG_HEVC_DECODER 1
