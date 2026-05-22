@@ -37,49 +37,49 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # - id: linux-x64
-          #   runs_on: ubuntu-24.04
-          #   triplet: x64-linux-dynamic
-          # - id: linux-arm64
-          #   runs_on: ubuntu-24.04-arm
-          #   triplet: arm64-linux-dynamic
-          # - id: windows-x64
-          #   runs_on: windows-2022
-          #   triplet: x64-windows-dynamic
-          # - id: windows-arm64
-          #   runs_on: windows-2022
-          #   triplet: arm64-windows-dynamic
-          # - id: windows-gnu-x64
-          #   runs_on: ubuntu-24.04
-          #   triplet: x64-windows-gnu-dynamic
-          #   setup_mingw: true
-          # - id: macos-arm64
-          #   runs_on: macos-14
-          #   triplet: arm64-osx-dynamic
+          - id: linux-x64
+            runs_on: ubuntu-24.04
+            triplet: x64-linux-dynamic
+          - id: linux-arm64
+            runs_on: ubuntu-24.04-arm
+            triplet: arm64-linux-dynamic
+          - id: windows-x64
+            runs_on: windows-2022
+            triplet: x64-windows-dynamic
+          - id: windows-arm64
+            runs_on: windows-2022
+            triplet: arm64-windows-dynamic
+          - id: windows-gnu-x64
+            runs_on: ubuntu-24.04
+            triplet: x64-windows-gnu-dynamic
+            setup_mingw: true
+          - id: macos-arm64
+            runs_on: macos-14
+            triplet: arm64-osx-dynamic
           - id: macos-x64
             runs_on: macos-15-intel
             triplet: x64-osx-dynamic
-          # - id: android-arm64
-          #   runs_on: ubuntu-24.04
-          #   triplet: arm64-android-dynamic
-          #   setup_android: true
-          # - id: android-armv7
-          #   runs_on: ubuntu-24.04
-          #   triplet: arm-neon-android-dynamic
-          #   setup_android: true
-          # - id: android-x64
-          #   runs_on: ubuntu-24.04
-          #   triplet: x64-android-dynamic
-          #   setup_android: true
-          # - id: ios-arm64
-          #   runs_on: macos-14
-          #   triplet: arm64-ios-dynamic
-          # - id: ios-sim-arm64
-          #   runs_on: macos-14
-          #   triplet: arm64-ios-simulator-dynamic
-          # - id: ios-sim-x64
-          #   runs_on: macos-15-intel
-          #   triplet: x64-ios-simulator-dynamic
+          - id: android-arm64
+            runs_on: ubuntu-24.04
+            triplet: arm64-android-dynamic
+            setup_android: true
+          - id: android-armv7
+            runs_on: ubuntu-24.04
+            triplet: arm-neon-android-dynamic
+            setup_android: true
+          - id: android-x64
+            runs_on: ubuntu-24.04
+            triplet: x64-android-dynamic
+            setup_android: true
+          - id: ios-arm64
+            runs_on: macos-14
+            triplet: arm64-ios-dynamic
+          - id: ios-sim-arm64
+            runs_on: macos-14
+            triplet: arm64-ios-simulator-dynamic
+          - id: ios-sim-x64
+            runs_on: macos-15-intel
+            triplet: x64-ios-simulator-dynamic
 
     steps:
       - uses: actions/checkout@v5
