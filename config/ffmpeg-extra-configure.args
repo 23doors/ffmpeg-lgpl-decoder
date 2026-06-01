@@ -173,3 +173,4 @@
 
 --enable-bsf=h264_mp4toannexb
 --enable-bsf=hevc_mp4toannexb
+--enable-bsf=extract_extradata
