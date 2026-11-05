@@ -123,7 +123,7 @@ endif()
 if(VCPKG_TARGET_IS_LINUX AND VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")
     # Meson links the shared library with the C driver, which leaves out libstdc++:
     # glibcxx assertions in debug builds then fail to link.
-    list(APPEND OPTIONS
+    list(APPEND FEATURE_OPTIONS
         "-Dc_link_args=-lstdc++"
         "-Dcpp_link_args=-lstdc++"
     )
