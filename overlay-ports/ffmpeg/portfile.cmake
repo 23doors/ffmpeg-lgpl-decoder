@@ -17,6 +17,7 @@ vcpkg_from_github(
         0040-ffmpeg-add-av_stream_get_first_dts-for-chromium.patch # Do not remove this patch. It is required by chromium
         0045-use-prebuilt-bin2c.patch
         0046-fix-msvc-detection.patch
+        0047-h264-mp4toannexb-four-byte-start-codes.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

@@ -1,0 +1,27 @@
+--- a/libavcodec/bsf/h264_mp4toannexb.c
++++ b/libavcodec/bsf/h264_mp4toannexb.c
+@@ -62,20 +62,15 @@
+          * add it manually again
+          */
+         start_code_size = 0;
+-    else if (ps == PS_IN_BAND || *out_size == 0)
+-        start_code_size = 4;
+     else
+-        start_code_size = 3;
++        /* always 4 bytes: some Android decoders (goldfish's H.264) only find
++         * units behind 00 00 00 01, which is what ExoPlayer sends */
++        start_code_size = 4;
+ 
+     if (copy) {
+         memcpy(*out + start_code_size, in, in_size);
+-        if (start_code_size == 4) {
++        if (start_code_size)
+             AV_WB32(*out, 1);
+-        } else if (start_code_size) {
+-            (*out)[0] =
+-            (*out)[1] = 0;
+-            (*out)[2] = 1;
+-        }
+         *out  += start_code_size + in_size;
+     }
+     *out_size += start_code_size + in_size;
