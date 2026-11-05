@@ -120,7 +120,7 @@ if(VCPKG_TARGET_IS_EMSCRIPTEN)
     list(APPEND OPTIONS -Dutilities=disabled)
 endif()
 
-if(VCPKG_TARGET_IS_LINUX AND VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")
+if((VCPKG_TARGET_IS_LINUX OR VCPKG_TARGET_IS_MINGW) AND VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")
     # Meson links the shared library with the C driver, which leaves out libstdc++:
     # glibcxx assertions in debug builds then fail to link.
     list(APPEND FEATURE_OPTIONS

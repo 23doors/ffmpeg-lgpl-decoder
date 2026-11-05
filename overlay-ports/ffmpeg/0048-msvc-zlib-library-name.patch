@@ -1,0 +1,10 @@
+--- a/configure
++++ b/configure
+@@ -5129,7 +5129,6 @@
+             -mthumb)              ;;
+             -march=*)             ;;
+             -mfp16-format=*)      ;;
+-            -lz)                  echo zlib.lib ;;
+             -lx264)               echo libx264.lib ;;
+             -lmp3lame)            echo libmp3lame.lib ;;
+             -lstdc++)             ;;
