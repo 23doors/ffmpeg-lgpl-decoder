@@ -19,7 +19,13 @@ list(APPEND options
     -Dfuzz=disabled
     -Dprofile=disabled
     -Dtest=disabled
+    # Meson's auto features otherwise link what the host has (Homebrew's on macOS runners).
+    -Dlibunibreak=disabled
 )
+
+if(NOT VCPKG_TARGET_IS_LINUX)
+    list(APPEND options -Dfontconfig=disabled)
+endif()
 
 if(NOT VCPKG_TARGET_IS_WINDOWS AND NOT VCPKG_TARGET_IS_OSX AND NOT VCPKG_TARGET_IS_LINUX)
     list(APPEND options -Drequire-system-font-provider=false)
