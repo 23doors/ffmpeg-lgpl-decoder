@@ -1,0 +1,14 @@
+--- a/meson.build
++++ b/meson.build
+@@ -87,8 +87,10 @@
+ 
+ deps += cc.find_library('m', required: false)
+ 
++# Bionic's iconv crashes on the state reset libass ends each recoding with
++# (Android 11), and exists only from API 28.
+ iconv_dep = dependency('iconv', required: false)
+-if iconv_dep.found()
++if iconv_dep.found() and host_machine.system() != 'android'
+     deps += iconv_dep
+     conf.set('CONFIG_ICONV', 1)
+ endif
