@@ -20,6 +20,7 @@ vcpkg_from_github(
         0047-h264-mp4toannexb-four-byte-start-codes.patch
         0048-msvc-zlib-library-name.patch
         0049-mediacodec-release-after-close.patch
+        0050-mediacodec-bounded-stall.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

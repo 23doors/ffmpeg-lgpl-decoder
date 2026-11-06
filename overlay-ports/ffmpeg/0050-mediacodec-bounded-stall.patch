@@ -1,0 +1,73 @@
+--- a/libavcodec/mediacodecdec.c
++++ b/libavcodec/mediacodecdec.c
+@@ -31,6 +31,7 @@
+ #include "libavutil/opt.h"
+ #include "libavutil/intreadwrite.h"
+ #include "libavutil/pixfmt.h"
++#include "libavutil/time.h"
+ #include "libavutil/internal.h"
+ 
+ #include "avcodec.h"
+@@ -59,8 +60,15 @@
+     int use_ndk_codec;
+     // Ref. MediaFormat KEY_OPERATING_RATE
+     int operating_rate;
++
++    // When input and output were first both found unavailable, before any output.
++    int64_t stall_start;
++    int stalled;
+ } MediaCodecH264DecContext;
+ 
++// A codec that takes no input and gives no output for this long is stuck.
++#define MEDIACODEC_STALL_TIMEOUT_US 5000000
++
+ static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
+ {
+     MediaCodecH264DecContext *s = avctx->priv_data;
+@@ -500,6 +508,9 @@
+         }
+     }
+ 
++    if (s->stalled)
++        return AVERROR_EXTERNAL;
++
+     /* poll for new frame */
+     ret = ff_mediacodec_dec_receive(avctx, s->ctx, frame, false);
+     if (ret != AVERROR(EAGAIN))
+@@ -519,11 +530,26 @@
+                  * return EAGAIN, which violate the design.
+                  */
+                 if (ff_AMediaCodec_infoTryAgainLater(s->ctx->codec, index) &&
+-                    ret == AVERROR(EAGAIN))
++                    ret == AVERROR(EAGAIN)) {
++                    /* Without any output yet no frame of ours can be holding
++                     * the codec's buffers, so nothing will free them: fail
++                     * rather than spin here forever. */
++                    if (s->ctx->output_buffer_count == 0) {
++                        int64_t now = av_gettime_relative();
++                        if (!s->stall_start) {
++                            s->stall_start = now;
++                        } else if (now - s->stall_start > MEDIACODEC_STALL_TIMEOUT_US) {
++                            av_log(avctx, AV_LOG_ERROR, "MediaCodec stalled before its first frame\n");
++                            s->stalled = 1;
++                            return AVERROR_EXTERNAL;
++                        }
++                    }
+                     continue;
++                }
+                 return ret;
+             }
+             s->ctx->current_input_buffer = index;
++            s->stall_start = 0;
+         }
+ 
+         /* try to flush any buffered packet data */
+@@ -574,6 +600,8 @@
+     MediaCodecH264DecContext *s = avctx->priv_data;
+ 
+     av_packet_unref(&s->buffered_pkt);
++    s->stall_start = 0;
++    s->stalled = 0;
+ 
+     ff_mediacodec_dec_flush(avctx, s->ctx);
+ }
