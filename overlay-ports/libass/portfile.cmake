@@ -7,6 +7,7 @@ vcpkg_from_github(
     PATCHES
         arm64-windows-asm.patch
         android-no-iconv.patch
+        default-font-uid.patch
 )
 
 vcpkg_find_acquire_program(PKGCONFIG)

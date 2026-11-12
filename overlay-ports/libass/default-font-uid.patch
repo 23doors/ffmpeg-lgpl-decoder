@@ -1,0 +1,14 @@
+diff --git a/libass/ass_fontselect.c b/libass/ass_fontselect.c
+index 2303876..b24fd52 100644
+--- a/libass/ass_fontselect.c
++++ b/libass/ass_fontselect.c
+@@ -922,6 +922,9 @@ char *ass_font_select(ASS_FontSelector *priv,
+     if (!res && priv->path_default) {
+         res = priv->path_default;
+         *index = priv->index_default;
++        // Not a face from the font list: no uid. add_face compares it with
++        // the faces it already has, so leaving it unset could match one.
++        *uid = -1;
+         ass_msg(priv->library, MSGL_WARN, "fontselect: Using default font: "
+                 "(%s, %d, %d) -> %s, %d, %s", family, bold, italic,
+                 priv->path_default, *index,
