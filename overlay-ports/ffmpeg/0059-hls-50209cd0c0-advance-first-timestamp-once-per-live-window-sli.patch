@@ -1,0 +1,59 @@
+From 50209cd0c025af07dff4dafbb1ac747c6287a248 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Kacper=20Michaj=C5=82ow?= <kasper93@gmail.com>
+Date: Wed, 17 Jun 2026 20:18:48 +0200
+Subject: [PATCH] avformat/hls: advance first_timestamp once per live window
+ slide
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Anchor c->first_timestamp to the playlist that established it and only let
+that playlist's expiring segments advance it, so it slides exactly once
+per window slide.
+
+Signed-off-by: Kacper Michajłow <kasper93@gmail.com>
+---
+ libavformat/hls.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index 80a0b3f01c..b3b8f3a80a 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -231,6 +231,7 @@ typedef struct HLSContext {
+     int prefer_x_start;
+     int first_packet;
+     int64_t first_timestamp;
++    struct playlist *first_timestamp_pls;
+     int64_t cur_timestamp;
+     AVIOInterruptCB *interrupt_callback;
+     AVDictionary *avio_opts;
+@@ -1113,7 +1114,8 @@ static int parse_playlist(HLSContext *c, const char *url,
+         }
+     }
+     if (prev_segments) {
+-        if (pls->start_seq_no > prev_start_seq_no && c->first_timestamp != AV_NOPTS_VALUE) {
++        if (pls->start_seq_no > prev_start_seq_no && c->first_timestamp != AV_NOPTS_VALUE &&
++            c->first_timestamp_pls == pls) {
+             int64_t prev_timestamp = c->first_timestamp;
+             int i;
+             int64_t diff = pls->start_seq_no - prev_start_seq_no;
+@@ -2256,6 +2258,7 @@ static int hls_read_header(AVFormatContext *s)
+ 
+     c->first_packet = 1;
+     c->first_timestamp = AV_NOPTS_VALUE;
++    c->first_timestamp_pls = NULL;
+     c->cur_timestamp = AV_NOPTS_VALUE;
+ 
+     if ((ret = ffio_copy_url_options(s->pb, &c->avio_opts)) < 0)
+@@ -2718,6 +2721,7 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+ 
+                         if (c->first_timestamp == AV_NOPTS_VALUE) {
+                             c->first_timestamp = ts;
++                            c->first_timestamp_pls = pls;
+ 
+                             if (pls->type == PLS_TYPE_EVENT)
+                                 for (unsigned k = 0; k < s->nb_streams; k++) {
+-- 
+2.56.1
+

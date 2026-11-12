@@ -1,0 +1,43 @@
+From caa3fa6af070c1eeee59da027fdcde326fc64a89 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Kacper=20Michaj=C5=82ow?= <kasper93@gmail.com>
+Date: Wed, 17 Jun 2026 03:03:44 +0200
+Subject: [PATCH] avformat/hls: fix seeking to before the first timestamp
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+find_timestamp_in_playlist() already selects the first segment when the
+target is below the playlist's first timestamp, but returns 0.
+hls_read_seek() treats that as a failure, and all seek operation is
+failed.
+
+This breaks seeking to the very start whenever the requested timestamp
+is slightly below the first one. Clamp such targets to the first segment
+and report success instead.
+
+Fixes: https://github.com/mpv-player/mpv/issues/14840#issuecomment-4703186169
+Signed-off-by: Kacper Michajłow <kasper93@gmail.com>
+---
+ libavformat/hls.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index 8788deee7d..ea58a6d2f6 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -2019,8 +2019,11 @@ static int find_timestamp_in_playlist(HLSContext *c, struct playlist *pls,
+                   0 : c->first_timestamp;
+ 
+     if (timestamp < pos) {
++        /* Seeking before the start of the playlist, clamp to the first segment. */
+         *seq_no = pls->start_seq_no;
+-        return 0;
++        if (seg_start_ts)
++            *seg_start_ts = pos;
++        return 1;
+     }
+ 
+     for (i = 0; i < pls->n_segments; i++) {
+-- 
+2.56.1
+

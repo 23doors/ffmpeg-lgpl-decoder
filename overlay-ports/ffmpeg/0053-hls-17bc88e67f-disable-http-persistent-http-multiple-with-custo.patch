@@ -1,0 +1,49 @@
+From 17bc88e67feb841cd342eba33df7a93d9a05819f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Kacper=20Michaj=C5=82ow?= <kasper93@gmail.com>
+Date: Fri, 8 May 2026 00:59:51 +0200
+Subject: [PATCH] avformat/hls: disable http_persistent/http_multiple with
+ custom io_open
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Both rely on the AVIOContext being backed by the builtin URLContext.
+When the API user overrides io_open, the keepalive path asserts on the
+missing URLContext and the http_multiple auto-detect probe fails on
+every read. http_multiple=1 still works even with custom IO.
+
+Signed-off-by: Kacper Michajłow <kasper93@gmail.com>
+---
+ libavformat/hls.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index df13b139f1..29dc08ef1f 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -2157,6 +2157,22 @@ static int hls_read_header(AVFormatContext *s)
+     if ((ret = ffio_copy_url_options(s->pb, &c->avio_opts)) < 0)
+         return ret;
+ 
++    /* http_persistent and http_multiple auto-detection both rely on the
++     * AVIOContext being backed by the builtin URLContext. Neither works
++     * when io_open is overridden with a custom callback. */
++    if (!ffio_geturlcontext(s->pb)) {
++        if (c->http_persistent) {
++            av_log(s, AV_LOG_WARNING, "Disabling http_persistent due to custom io_open.\n");
++            c->http_persistent = 0;
++        }
++        /* Only auto-detection is disabled, enabling http_multiple can still work
++         * with custom io_open. */
++        if (c->http_multiple == -1) {
++            av_log(s, AV_LOG_WARNING, "Disabling http_multiple due to custom io_open.\n");
++            c->http_multiple = 0;
++        }
++    }
++
+     /* XXX: Some HLS servers don't like being sent the range header,
+        in this case, we need to set http_seekable = 0 to disable
+        the range header */
+-- 
+2.56.1
+

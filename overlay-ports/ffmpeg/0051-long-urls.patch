@@ -1,0 +1,17 @@
+--- a/libavformat/internal.h	2026-11-12 23:16:08
++++ b/libavformat/internal.h	2026-11-12 23:16:08
+@@ -27,7 +27,13 @@
+ 
+ #include "avformat.h"
+ 
+-#define MAX_URL_SIZE 4096
++/* Signed and session-carrying addresses outgrow 4096: Plex's free channels (Amazon MediaTailor) name each HLS variant
++ * playlist by an address of 4839 characters, which the hls demuxer read cut (its line and URI buffers) and the http
++ * protocol then asked for cut (400 Bad Request). RFC 9110 4.1 recommends request lines of at least 8000 octets. Every
++ * use is bounded (av_strlcpy, snprintf, ff_get_line); what grows: a playlist's url and key_url (heap, 2 x 16 KiB), an
++ * HTTP connection's buffer (heap, 20 KiB) and the stack of one parse_playlist -> open_url -> http_open_cnx ->
++ * http_read_header chain, ~160 KiB at worst. */
++#define MAX_URL_SIZE 16384
+ 
+ /** size of probe buffer, for guessing file type from file contents */
+ #define PROBE_BUF_MIN 2048

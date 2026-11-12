@@ -1,0 +1,41 @@
+From 2526ac4771d6fff24506e5871d842771e2bbd59c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Kacper=20Michaj=C5=82ow?= <kasper93@gmail.com>
+Date: Wed, 8 Jul 2026 03:40:57 +0200
+Subject: [PATCH] avformat/hls: use av_rescale_q instead of doing only
+ denominator
+
+---
+ libavformat/hls.c | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index 4227ac2296..fd40800ca8 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -2779,8 +2779,8 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+                     }
+ 
+                     tb = get_timebase(pls);
+-                    ts_diff = av_rescale_rnd(pls->pkt->dts, AV_TIME_BASE,
+-                                            tb.den, AV_ROUND_DOWN) -
++                    ts_diff = av_rescale_q_rnd(pls->pkt->dts, tb,
++                                               AV_TIME_BASE_Q, AV_ROUND_DOWN) -
+                             pls->seek_timestamp;
+                     if (ts_diff >= 0 && (pls->seek_flags  & AVSEEK_FLAG_ANY ||
+                                         pls->pkt->flags & AV_PKT_FLAG_KEY)) {
+@@ -2903,9 +2903,9 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+     first_timestamp = c->first_timestamp == AV_NOPTS_VALUE ?
+                       0 : c->first_timestamp;
+ 
+-    seek_timestamp = av_rescale_rnd(timestamp, AV_TIME_BASE,
+-                                    s->streams[stream_index]->time_base.den,
+-                                    AV_ROUND_DOWN);
++    seek_timestamp = av_rescale_q_rnd(timestamp,
++                                      s->streams[stream_index]->time_base,
++                                      AV_TIME_BASE_Q, AV_ROUND_DOWN);
+ 
+     duration = s->duration == AV_NOPTS_VALUE ?
+                0 : s->duration;
+-- 
+2.56.1
+

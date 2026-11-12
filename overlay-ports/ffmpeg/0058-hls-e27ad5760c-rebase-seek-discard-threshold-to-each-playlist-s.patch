@@ -1,0 +1,125 @@
+From e27ad5760c0c8eca7c95bb907dc6e4e62dbf129b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Kacper=20Michaj=C5=82ow?= <kasper93@gmail.com>
+Date: Wed, 17 Jun 2026 07:00:42 +0200
+Subject: [PATCH] avformat/hls: rebase seek discard threshold to each
+ playlist's DTS baseline
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+After a seek, hls_read_packet drops packets until each playlist reaches
+seek_timestamp. That threshold lives on c->first_timestamp's baseline,
+i.e. the DTS of whichever stream produced the very first packet. Streams
+can have different DTS baselines though. So comparing one stream's
+threshold against another stream's DTS is wrong. A stream whose first
+keyframe precedes the global baseline gets its segment keyframe dropped
+and resumes a segment (or more) late.
+
+Track the first DTS per playlist and rebase the threshold onto each
+playlist's own baseline. Since HLS segments are presentation-aligned
+across renditions, every stream then resumes at the same presentation
+time. seek_timestamp keeps its meaning on the global timeline, only the
+per-playlist comparison value is translated.
+
+This fixes playlists that would be unable to play from the start, and
+instead skip one or more segments, before data is output.
+
+Signed-off-by: Kacper Michajłow <kasper93@gmail.com>
+---
+ libavformat/hls.c | 46 ++++++++++++++++++++++++++++++++--------------
+ 1 file changed, 32 insertions(+), 14 deletions(-)
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index ea58a6d2f6..80a0b3f01c 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -159,6 +159,9 @@ struct playlist {
+ 
+     HLSAudioSetupInfo audio_setup_info;
+ 
++    /* Constant offset of this playlist's DTS baseline relative to
++     * c->first_timestamp. */
++    int64_t ts_offset;
+     int64_t seek_timestamp;
+     int seek_flags;
+     int seek_stream_index; /* into subdemuxer stream array */
+@@ -349,6 +352,7 @@ static struct playlist *new_playlist(HLSContext *c, const char *url,
+         return NULL;
+     }
+     av_strlcpy(pls->url, abs_url, sizeof(pls->url));
++    pls->ts_offset = AV_NOPTS_VALUE;
+     pls->seek_timestamp = AV_NOPTS_VALUE;
+ 
+     pls->is_id3_timestamped = -1;
+@@ -2582,7 +2586,8 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+             pls->pb.pub.eof_reached = 0;
+             if (c->cur_timestamp != AV_NOPTS_VALUE) {
+                 /* catch up */
+-                pls->seek_timestamp = c->cur_timestamp;
++                pls->seek_timestamp = c->cur_timestamp +
++                    (pls->ts_offset != AV_NOPTS_VALUE ? pls->ts_offset : 0);
+                 pls->seek_flags = AVSEEK_FLAG_ANY;
+                 pls->seek_stream_index = -1;
+             }
+@@ -2700,24 +2705,29 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+                         fill_timing_for_id3_timestamped_stream(pls);
+                     }
+ 
+-                    if (c->first_timestamp == AV_NOPTS_VALUE &&
+-                        pls->pkt->dts       != AV_NOPTS_VALUE) {
++                    if (pls->ts_offset == AV_NOPTS_VALUE &&
++                        pls->pkt->dts    != AV_NOPTS_VALUE) {
+                         int64_t seg_idx = pls->cur_seq_no - pls->start_seq_no;
+-                        c->first_timestamp = av_rescale_q(pls->pkt->dts,
++                        int64_t ts = av_rescale_q(pls->pkt->dts,
+                             get_timebase(pls), AV_TIME_BASE_Q);
+ 
+                         /* EVENT playlists preserve all segments from the start */
+-                        if (pls->type == PLS_TYPE_EVENT) {
++                        if (pls->type == PLS_TYPE_EVENT)
+                             for (int64_t k = 0; k < seg_idx && k < pls->n_segments; k++)
+-                                c->first_timestamp -= pls->segments[k]->duration;
+-
+-                            for (unsigned k = 0; k < s->nb_streams; k++) {
+-                                AVStream *st = s->streams[k];
+-                                if (st->start_time == AV_NOPTS_VALUE)
+-                                    st->start_time = av_rescale_q(c->first_timestamp,
+-                                        AV_TIME_BASE_Q, st->time_base);
+-                            }
++                                ts -= pls->segments[k]->duration;
++
++                        if (c->first_timestamp == AV_NOPTS_VALUE) {
++                            c->first_timestamp = ts;
++
++                            if (pls->type == PLS_TYPE_EVENT)
++                                for (unsigned k = 0; k < s->nb_streams; k++) {
++                                    AVStream *st = s->streams[k];
++                                    if (st->start_time == AV_NOPTS_VALUE)
++                                        st->start_time = av_rescale_q(ts,
++                                            AV_TIME_BASE_Q, st->time_base);
++                                }
+                         }
++                        pls->ts_offset = ts - c->first_timestamp;
+                     }
+                 }
+ 
+@@ -2934,7 +2944,15 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+         /* Reset the init segment so it's re-fetched and served appropriately */
+         pls->cur_init_section = NULL;
+ 
+-        pls->seek_timestamp = seek_timestamp;
++        /* The discard in hls_read_packet compares this playlist's packet DTS
++         * against seek_timestamp, but seek_timestamp is on c->first_timestamp's
++         * baseline (whichever stream produced the first packet). Streams can
++         * have different DTS baselines, so translate the threshold onto this
++         * playlist's own baseline using its captured offset. */
++        if (pls->ts_offset != AV_NOPTS_VALUE)
++            pls->seek_timestamp = seek_timestamp + pls->ts_offset;
++        else
++            pls->seek_timestamp = seek_timestamp;
+         pls->seek_flags = flags;
+ 
+         if (pls != seek_pls) {
+-- 
+2.56.1
+

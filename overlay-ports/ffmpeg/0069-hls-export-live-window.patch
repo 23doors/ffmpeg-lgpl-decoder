@@ -1,0 +1,110 @@
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index eca5788..90cad42 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -248,6 +248,16 @@ typedef struct HLSContext {
+     int seg_max_retry;
+     AVIOContext *playlist_pb;
+     HLSCryptoContext  crypto_ctx;
++
++    /* The live window of the playlist the timeline follows (first_timestamp_pls), exported read-only for a caller
++     * to read between av_read_frame() calls; all times in AV_TIME_BASE units on the timeline hls_read_seek() takes. */
++    int live_playlist_type;         /* 0: live (unspecified), 1: EVENT, 2: VOD */
++    int live_finished;              /* EXT-X-ENDLIST seen */
++    int64_t live_target_duration;
++    int64_t live_window_start;      /* where the listed segments begin */
++    int64_t live_window_end;        /* where they end (the live edge, as listed) */
++    int64_t live_window_remaining;  /* listed after the segment being read */
++    int64_t live_media_sequence;
+ } HLSContext;
+ 
+ static void free_segment_dynarray(struct segment **segments, int n_segments)
+@@ -2290,6 +2300,8 @@ static int hls_close(AVFormatContext *s)
+     return 0;
+ }
+ 
++static void update_live_window(HLSContext *c);
++
+ static int hls_read_header(AVFormatContext *s)
+ {
+     HLSContext *c = s->priv_data;
+@@ -2607,6 +2619,7 @@ static int hls_read_header(AVFormatContext *s)
+     }
+ 
+     update_noheader_flag(s);
++    update_live_window(c);
+ 
+     return 0;
+ }
+@@ -2721,6 +2734,40 @@ static int metadata_has_changed(const AVDictionary *current,
+     return 0;
+ }
+ 
++/* The playlist the exported live window describes: the one the timeline follows, else the first one read. */
++static struct playlist *live_window_playlist(HLSContext *c)
++{
++    if (c->first_timestamp_pls)
++        return c->first_timestamp_pls;
++    for (int i = 0; i < c->n_playlists; i++)
++        if (c->playlists[i]->needed && c->playlists[i]->n_segments)
++            return c->playlists[i];
++    return c->n_playlists ? c->playlists[0] : NULL;
++}
++
++static void update_live_window(HLSContext *c)
++{
++    struct playlist *pls = live_window_playlist(c);
++    int64_t start, listed = 0, remaining = 0, current;
++
++    if (!pls)
++        return;
++    start   = c->first_timestamp == AV_NOPTS_VALUE ? 0 : c->first_timestamp;
++    current = pls->cur_seq_no - pls->start_seq_no;
++    for (int i = 0; i < pls->n_segments; i++) {
++        listed += pls->segments[i]->duration;
++        if (i > current)
++            remaining += pls->segments[i]->duration;
++    }
++    c->live_playlist_type    = pls->type == PLS_TYPE_EVENT ? 1 : pls->type == PLS_TYPE_VOD ? 2 : 0;
++    c->live_finished         = pls->finished;
++    c->live_target_duration  = pls->target_duration;
++    c->live_window_start     = start;
++    c->live_window_end       = start + listed;
++    c->live_window_remaining = remaining;
++    c->live_media_sequence   = pls->start_seq_no;
++}
++
+ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+ {
+     HLSContext *c = s->priv_data;
+@@ -2926,6 +2973,7 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+             }
+         }
+ 
++        update_live_window(c);
+         return 0;
+     }
+     return AVERROR_EOF;
+@@ -3165,6 +3213,22 @@ static const AVOption hls_options[] = {
+         OFFSET(seg_format_opts), AV_OPT_TYPE_DICT, {.str = NULL}, 0, 0, FLAGS},
+     {"seg_max_retry", "Maximum number of times to reload a segment on error.",
+      OFFSET(seg_max_retry), AV_OPT_TYPE_INT, {.i64 = 0}, 0, INT_MAX, FLAGS},
++#define EXPORT (FLAGS | AV_OPT_FLAG_EXPORT | AV_OPT_FLAG_READONLY)
++    {"hls_playlist_type", "type of the playlist the timeline follows (0 live, 1 event, 2 vod)",
++        OFFSET(live_playlist_type), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 2, EXPORT},
++    {"hls_finished", "the playlist the timeline follows has ended (EXT-X-ENDLIST)",
++        OFFSET(live_finished), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, EXPORT},
++    {"hls_target_duration", "the playlist's target segment duration, in microseconds",
++        OFFSET(live_target_duration), AV_OPT_TYPE_INT64, {.i64 = 0}, 0, INT64_MAX, EXPORT},
++    {"hls_window_start", "where the listed segments begin, in microseconds on the seek timeline",
++        OFFSET(live_window_start), AV_OPT_TYPE_INT64, {.i64 = 0}, INT64_MIN, INT64_MAX, EXPORT},
++    {"hls_window_end", "where the listed segments end, in microseconds on the seek timeline",
++        OFFSET(live_window_end), AV_OPT_TYPE_INT64, {.i64 = 0}, INT64_MIN, INT64_MAX, EXPORT},
++    {"hls_window_remaining", "listed after the segment being read, in microseconds",
++        OFFSET(live_window_remaining), AV_OPT_TYPE_INT64, {.i64 = 0}, 0, INT64_MAX, EXPORT},
++    {"hls_media_sequence", "the media sequence number of the first listed segment",
++        OFFSET(live_media_sequence), AV_OPT_TYPE_INT64, {.i64 = 0}, 0, INT64_MAX, EXPORT},
++#undef EXPORT
+     {NULL}
+ };
+ 

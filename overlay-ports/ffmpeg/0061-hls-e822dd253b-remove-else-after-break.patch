@@ -1,0 +1,84 @@
+From e822dd253b281e24a6a25cfe422ba5323ae9b961 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Kacper=20Michaj=C5=82ow?= <kasper93@gmail.com>
+Date: Wed, 8 Jul 2026 03:32:54 +0200
+Subject: [PATCH] avformat/hls: remove else after break
+
+To reduce unnecessary nesting.
+---
+ libavformat/hls.c | 56 +++++++++++++++++++++++------------------------
+ 1 file changed, 28 insertions(+), 28 deletions(-)
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index b4f4f035a9..4227ac2296 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -2725,38 +2725,38 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+                     if (!avio_feof(&pls->pb.pub) && ret != AVERROR_EOF)
+                         return ret;
+                     break;
+-                } else {
+-                    /* stream_index check prevents matching picture attachments etc. */
+-                    if (pls->is_id3_timestamped && pls->pkt->stream_index == 0) {
+-                        /* audio elementary streams are id3 timestamped */
+-                        fill_timing_for_id3_timestamped_stream(pls);
+-                    }
++                }
++
++                /* stream_index check prevents matching picture attachments etc. */
++                if (pls->is_id3_timestamped && pls->pkt->stream_index == 0) {
++                    /* audio elementary streams are id3 timestamped */
++                    fill_timing_for_id3_timestamped_stream(pls);
++                }
++
++                if (pls->ts_offset == AV_NOPTS_VALUE &&
++                    pls->pkt->dts    != AV_NOPTS_VALUE) {
++                    int64_t seg_idx = pls->cur_seq_no - pls->start_seq_no;
++                    int64_t ts = av_rescale_q(pls->pkt->dts,
++                        get_timebase(pls), AV_TIME_BASE_Q);
++
++                    /* EVENT playlists preserve all segments from the start */
++                    if (pls->type == PLS_TYPE_EVENT)
++                        for (int64_t k = 0; k < seg_idx && k < pls->n_segments; k++)
++                            ts -= pls->segments[k]->duration;
+ 
+-                    if (pls->ts_offset == AV_NOPTS_VALUE &&
+-                        pls->pkt->dts    != AV_NOPTS_VALUE) {
+-                        int64_t seg_idx = pls->cur_seq_no - pls->start_seq_no;
+-                        int64_t ts = av_rescale_q(pls->pkt->dts,
+-                            get_timebase(pls), AV_TIME_BASE_Q);
++                    if (c->first_timestamp == AV_NOPTS_VALUE) {
++                        c->first_timestamp = ts;
++                        c->first_timestamp_pls = pls;
+ 
+-                        /* EVENT playlists preserve all segments from the start */
+                         if (pls->type == PLS_TYPE_EVENT)
+-                            for (int64_t k = 0; k < seg_idx && k < pls->n_segments; k++)
+-                                ts -= pls->segments[k]->duration;
+-
+-                        if (c->first_timestamp == AV_NOPTS_VALUE) {
+-                            c->first_timestamp = ts;
+-                            c->first_timestamp_pls = pls;
+-
+-                            if (pls->type == PLS_TYPE_EVENT)
+-                                for (unsigned k = 0; k < s->nb_streams; k++) {
+-                                    AVStream *st = s->streams[k];
+-                                    if (st->start_time == AV_NOPTS_VALUE)
+-                                        st->start_time = av_rescale_q(ts,
+-                                            AV_TIME_BASE_Q, st->time_base);
+-                                }
+-                        }
+-                        pls->ts_offset = ts - c->first_timestamp;
++                            for (unsigned k = 0; k < s->nb_streams; k++) {
++                                AVStream *st = s->streams[k];
++                                if (st->start_time == AV_NOPTS_VALUE)
++                                    st->start_time = av_rescale_q(ts,
++                                        AV_TIME_BASE_Q, st->time_base);
++                            }
+                     }
++                    pls->ts_offset = ts - c->first_timestamp;
+                 }
+ 
+                 seg = current_segment(pls);
+-- 
+2.56.1
+

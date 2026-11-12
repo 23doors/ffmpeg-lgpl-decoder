@@ -1,0 +1,68 @@
+From ee498f5e82d281851f9468bcbe427ead342894eb Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Kacper=20Michaj=C5=82ow?= <kasper93@gmail.com>
+Date: Wed, 8 Jul 2026 07:42:58 +0200
+Subject: [PATCH] avformat/hls: refresh stale playlist when seeking
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Seeking used only the loaded segment list. Live and EVENT playlists can
+gain segments after loading, and sliding-window playlists can also
+expire them, so a seek target may lie outside the loaded window even
+when it is within the actual presentation. Refresh the target playlist
+before resolving the seek when the target may fall outside the window.
+Rate-limited to one-half the target duration, the minimum reload
+interval of RFC 8216 6.3.4.
+
+Signed-off-by: Kacper Michajłow <kasper93@gmail.com>
+---
+ libavformat/hls.c | 26 +++++++++++++++++++++++---
+ 1 file changed, 23 insertions(+), 3 deletions(-)
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index e6772292b4..eca5788279 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -2945,9 +2945,6 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+     if ((flags & AVSEEK_FLAG_BYTE) || (c->ctx->ctx_flags & AVFMTCTX_UNSEEKABLE))
+         return AVERROR(ENOSYS);
+ 
+-    first_timestamp = c->first_timestamp == AV_NOPTS_VALUE ?
+-                      0 : c->first_timestamp;
+-
+     seek_timestamp = av_rescale_q_rnd(timestamp,
+                                       s->streams[stream_index]->time_base,
+                                       AV_TIME_BASE_Q, AV_ROUND_DOWN);
+@@ -2966,6 +2963,29 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+     if (!seek_pls)
+         return AVERROR(EIO);
+ 
++    /* Live and EVENT playlists may have gained segments since the last load,
++     * and sliding-window playlists may also have expired some. Refresh before
++     * resolving a seek that may fall outside the loaded window, rate limited
++     * to the minimum reload interval (RFC 8216 6.3.4). */
++    if (!seek_pls->finished) {
++        int64_t elapsed = av_gettime_relative() - seek_pls->last_load_time;
++        int64_t start = c->first_timestamp == AV_NOPTS_VALUE ?
++                        0 : c->first_timestamp;
++        int64_t end = start;
++        int need_refresh;
++        for (i = 0; i < seek_pls->n_segments; i++)
++            end += seek_pls->segments[i]->duration;
++        need_refresh = seek_timestamp >= end;
++        if (seek_pls->type == PLS_TYPE_UNSPECIFIED)
++            need_refresh |= seek_timestamp < start + elapsed +
++                                             seek_pls->target_duration;
++        if (need_refresh && elapsed >= default_reload_interval(seek_pls))
++            parse_playlist(c, seek_pls->url, seek_pls, NULL);
++    }
++
++    first_timestamp = c->first_timestamp == AV_NOPTS_VALUE ?
++                      0 : c->first_timestamp;
++
+     duration = s->duration == AV_NOPTS_VALUE ?
+                0 : s->duration;
+ 
+-- 
+2.56.1
+

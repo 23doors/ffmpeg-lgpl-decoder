@@ -1,0 +1,45 @@
+From b5402d1ecf90343e26679fdfe258de3a490fbb43 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Kacper=20Michaj=C5=82ow?= <kasper93@gmail.com>
+Date: Wed, 8 Jul 2026 07:41:15 +0200
+Subject: [PATCH] avformat/hls: measure playlist reload interval from load
+ start
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+RFC 8216 6.3.4 measures reload waits from the time the client began
+loading the playlist, not from when the load finished.
+
+Signed-off-by: Kacper Michajłow <kasper93@gmail.com>
+---
+ libavformat/hls.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index e8533aa93f..e6772292b4 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -849,6 +849,7 @@ static int parse_playlist(HLSContext *c, const char *url,
+     struct segment **prev_segments = NULL;
+     int prev_n_segments = 0;
+     int64_t prev_start_seq_no = -1;
++    int64_t load_start = av_gettime_relative();
+ 
+     if (is_http && !in && c->http_persistent && c->playlist_pb) {
+         in = c->playlist_pb;
+@@ -1159,10 +1160,10 @@ static int parse_playlist(HLSContext *c, const char *url,
+         free_segment_dynarray(prev_segments, prev_n_segments);
+         av_freep(&prev_segments);
+     }
+-    if (pls)
+-        pls->last_load_time = av_gettime_relative();
+ 
+ fail:
++    if (pls)
++        pls->last_load_time = load_start;
+     av_free(new_url);
+     if (close_in)
+         ff_format_io_close(c->ctx, &in);
+-- 
+2.56.1
+

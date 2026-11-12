@@ -21,6 +21,26 @@ vcpkg_from_github(
         0048-msvc-zlib-library-name.patch
         0049-mediacodec-release-after-close.patch
         0050-mediacodec-bounded-stall.patch
+        0051-long-urls.patch
+        # Upstream FFmpeg master's hls live-window seeking (Kacper Michajłow, 2026), not in 8.1.x: one patch per commit.
+        0052-hls-6d98a9a2e8-fix-seeking-in-event-playlists-that-start-mid-st.patch
+        0053-hls-17bc88e67f-disable-http-persistent-http-multiple-with-custo.patch
+        0054-hls-e8cfe912f4-also-report-stream-level-metadata-update.patch
+        0055-hls-54f0296dfe-deduplicate-playlists-shared-by-multiple-variant.patch
+        0056-hls-0616685b1e-reuse-the-open-connection-for-contiguous-byte-ra.patch
+        0057-hls-caa3fa6af0-fix-seeking-to-before-the-first-timestamp.patch
+        0058-hls-e27ad5760c-rebase-seek-discard-threshold-to-each-playlist-s.patch
+        0059-hls-50209cd0c0-advance-first-timestamp-once-per-live-window-sli.patch
+        0060-hls-b5bf0a1a87-check-if-http-protocol-is-native-or-not.patch
+        0061-hls-e822dd253b-remove-else-after-break.patch
+        0062-hls-2526ac4771-use-av-rescale-q-instead-of-doing-only-denominat.patch
+        0063-hls-ede944b362-allow-seeking-within-live-playlists.patch
+        0064-hls-84bc576371-set-stream-start-time-for-all-playlist-types.patch
+        0065-hls-848fb754dd-don-t-discard-target-segment-s-first-keyframe-wh.patch
+        0066-hls-f6fa0d3fda-refine-first-timestamp-from-the-first-segment-s.patch
+        0067-hls-b5402d1ecf-measure-playlist-reload-interval-from-load-start.patch
+        0068-hls-ee498f5e82-refresh-stale-playlist-when-seeking.patch
+        0069-hls-export-live-window.patch
 )
 
 if(SOURCE_PATH MATCHES " ")
