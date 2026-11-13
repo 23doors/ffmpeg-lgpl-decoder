@@ -1,5 +1,5 @@
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index eca5788..806be35 100644
+index eca5788..1b3dfd1 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
 @@ -165,6 +165,19 @@ struct playlist {
@@ -22,7 +22,7 @@ index eca5788..806be35 100644
      int seek_stream_index; /* into subdemuxer stream array */
  
      /* Renditions associated with this playlist, if any.
-@@ -248,6 +261,19 @@ typedef struct HLSContext {
+@@ -248,6 +261,28 @@ typedef struct HLSContext {
      int seg_max_retry;
      AVIOContext *playlist_pb;
      HLSCryptoContext  crypto_ctx;
@@ -39,10 +39,19 @@ index eca5788..806be35 100644
 +    int64_t live_media_sequence;
 +    int64_t live_playlist_age;      /* how old the playlist's last load was at the update */
 +    int64_t live_restarts;          /* seeks that restarted at the live position (see hls_read_seek) */
++
++    /* Output timeline across live restarts: a restart lands wherever the
++     * stream is now, and on streams whose timestamps restart (ad-stitched live
++     * channels) that can be anywhere on the packet clock. The first packet
++     * after a restart is placed at the requested time (restart_target) and
++     * every packet after it is shifted by the same amount (ts_shift, both in
++     * AV_TIME_BASE), so the caller's timeline goes on as a fresh tune's would. */
++    int64_t ts_shift;
++    int64_t restart_target;
  } HLSContext;
  
  static void free_segment_dynarray(struct segment **segments, int n_segments)
-@@ -358,6 +384,8 @@ static struct playlist *new_playlist(HLSContext *c, const char *url,
+@@ -358,6 +393,8 @@ static struct playlist *new_playlist(HLSContext *c, const char *url,
      pls->ts_offset = AV_NOPTS_VALUE;
      pls->seek_timestamp = AV_NOPTS_VALUE;
      pls->first_read_seq_no = -1;
@@ -51,7 +60,7 @@ index eca5788..806be35 100644
  
      pls->is_id3_timestamped = -1;
      pls->id3_mpegts_timestamp = AV_NOPTS_VALUE;
-@@ -1140,6 +1168,29 @@ static int parse_playlist(HLSContext *c, const char *url,
+@@ -1140,6 +1177,29 @@ static int parse_playlist(HLSContext *c, const char *url,
              }
          }
      }
@@ -81,7 +90,7 @@ index eca5788..806be35 100644
      if (prev_segments) {
          if (pls->start_seq_no > prev_start_seq_no && c->first_timestamp != AV_NOPTS_VALUE &&
              c->first_timestamp_pls == pls) {
-@@ -1816,6 +1867,7 @@ restart:
+@@ -1816,6 +1876,7 @@ restart:
          }
          segment_retries = 0;
          just_opened = 1;
@@ -89,7 +98,7 @@ index eca5788..806be35 100644
          if (v->first_read_seq_no < 0)
              v->first_read_seq_no = v->cur_seq_no;
      }
-@@ -2047,13 +2099,32 @@ static void add_metadata_from_renditions(AVFormatContext *s, struct playlist *pl
+@@ -2047,13 +2108,32 @@ static void add_metadata_from_renditions(AVFormatContext *s, struct playlist *pl
  
  /* if timestamp was in valid range: returns 1 and sets seq_no
   * if not: returns 0 and sets seq_no to closest segment */
@@ -124,7 +133,7 @@ index eca5788..806be35 100644
  
      if (timestamp < pos) {
          /* Seeking before the start of the playlist, clamp to the first segment. */
-@@ -2290,6 +2361,8 @@ static int hls_close(AVFormatContext *s)
+@@ -2290,6 +2370,8 @@ static int hls_close(AVFormatContext *s)
      return 0;
  }
  
@@ -133,7 +142,16 @@ index eca5788..806be35 100644
  static int hls_read_header(AVFormatContext *s)
  {
      HLSContext *c = s->priv_data;
-@@ -2607,6 +2680,7 @@ static int hls_read_header(AVFormatContext *s)
+@@ -2300,6 +2382,8 @@ static int hls_read_header(AVFormatContext *s)
+     c->interrupt_callback = &s->interrupt_callback;
+ 
+     c->first_packet = 1;
++    c->ts_shift = 0;
++    c->restart_target = AV_NOPTS_VALUE;
+     c->first_timestamp = AV_NOPTS_VALUE;
+     c->first_timestamp_pls = NULL;
+     c->first_timestamp_locked = 0;
+@@ -2607,6 +2691,7 @@ static int hls_read_header(AVFormatContext *s)
      }
  
      update_noheader_flag(s);
@@ -141,7 +159,7 @@ index eca5788..806be35 100644
  
      return 0;
  }
-@@ -2721,6 +2795,56 @@ static int metadata_has_changed(const AVDictionary *current,
+@@ -2721,6 +2806,56 @@ static int metadata_has_changed(const AVDictionary *current,
      return 0;
  }
  
@@ -187,8 +205,8 @@ index eca5788..806be35 100644
 +    c->live_playlist_type    = pls->type == PLS_TYPE_EVENT ? 1 : pls->type == PLS_TYPE_VOD ? 2 : 0;
 +    c->live_finished         = pls->finished;
 +    c->live_target_duration  = pls->target_duration;
-+    c->live_window_start     = start;
-+    c->live_window_end       = start + listed;
++    c->live_window_start     = start + c->ts_shift;
++    c->live_window_end       = start + listed + c->ts_shift;
 +    c->live_window_remaining = remaining;
 +    c->live_media_sequence   = pls->start_seq_no;
 +    c->live_playlist_age     = pls->last_load_time > 0 ?
@@ -198,7 +216,7 @@ index eca5788..806be35 100644
  static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
  {
      HLSContext *c = s->priv_data;
-@@ -2811,6 +2935,19 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -2811,6 +2946,19 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
                      ff_hls_senc_decrypt_frame(codec_id, &c->crypto_ctx, pls->pkt);
                  }
  
@@ -218,10 +236,27 @@ index eca5788..806be35 100644
                  if (pls->seek_timestamp == AV_NOPTS_VALUE)
                      break;
  
-@@ -2926,11 +3063,20 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -2926,11 +3074,37 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
              }
          }
  
++        if (c->restart_target != AV_NOPTS_VALUE &&
++            (pkt->pts != AV_NOPTS_VALUE || pkt->dts != AV_NOPTS_VALUE)) {
++            int64_t t = av_rescale_q(pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts,
++                                     ist->time_base, AV_TIME_BASE_Q);
++            c->ts_shift       = c->restart_target - t;
++            c->restart_target = AV_NOPTS_VALUE;
++            av_log(s, AV_LOG_VERBOSE, "Live restart placed at %"PRId64": timestamps shifted by %"PRId64"\n",
++                   t + c->ts_shift, c->ts_shift);
++        }
++        if (c->ts_shift) {
++            int64_t shift = av_rescale_q(c->ts_shift, AV_TIME_BASE_Q, ist->time_base);
++            if (pkt->pts != AV_NOPTS_VALUE)
++                pkt->pts += shift;
++            if (pkt->dts != AV_NOPTS_VALUE)
++                pkt->dts += shift;
++        }
++
 +        update_live_window(c);
          return 0;
      }
@@ -239,7 +274,7 @@ index eca5788..806be35 100644
  static int hls_read_seek(AVFormatContext *s, int stream_index,
                                 int64_t timestamp, int flags)
  {
-@@ -2941,6 +3087,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -2941,6 +3115,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
      int64_t first_timestamp, seek_timestamp, duration;
      int64_t seq_no, seg_start_ts;
      int snapped_to_segment = 0;
@@ -247,7 +282,18 @@ index eca5788..806be35 100644
  
      if ((flags & AVSEEK_FLAG_BYTE) || (c->ctx->ctx_flags & AVFMTCTX_UNSEEKABLE))
          return AVERROR(ENOSYS);
-@@ -2969,8 +3116,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -2948,6 +3123,10 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+     seek_timestamp = av_rescale_q_rnd(timestamp,
+                                       s->streams[stream_index]->time_base,
+                                       AV_TIME_BASE_Q, AV_ROUND_DOWN);
++    /* The caller's timeline is shifted after a live restart; the playlists and
++     * the packets read from them are not. */
++    seek_timestamp -= c->ts_shift;
++    c->restart_target = AV_NOPTS_VALUE;
+ 
+     /* find the playlist with the specified stream */
+     for (i = 0; i < c->n_playlists; i++) {
+@@ -2969,8 +3148,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
       * to the minimum reload interval (RFC 8216 6.3.4). */
      if (!seek_pls->finished) {
          int64_t elapsed = av_gettime_relative() - seek_pls->last_load_time;
@@ -257,7 +303,7 @@ index eca5788..806be35 100644
          int64_t end = start;
          int need_refresh;
          for (i = 0; i < seek_pls->n_segments; i++)
-@@ -2994,12 +3140,24 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -2994,12 +3172,25 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
          0 < duration && duration < seek_timestamp - first_timestamp)
          return AVERROR(EIO);
  
@@ -267,6 +313,7 @@ index eca5788..806be35 100644
 +         * fresh tune would, the live start position, with no discard. */
 +        tune = 1;
 +        c->live_restarts++;
++        c->restart_target = seek_timestamp + c->ts_shift;
 +        seq_no = live_start_seq_no(c, seek_pls);
 +        seg_start_ts = seek_timestamp;
 +        av_log(s, AV_LOG_VERBOSE, "Seek on playlist %d after its window moved on: "
@@ -283,7 +330,7 @@ index eca5788..806be35 100644
          flags & AVSEEK_FLAG_BACKWARD && !(flags & AVSEEK_FLAG_ANY)) {
          /* Seeking to start of segment ensures we seek to a keyframe located
           * before the given timestamp. */
-@@ -3056,12 +3214,26 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -3056,12 +3247,26 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
           * baseline (whichever stream produced the first packet). Streams can
           * have different DTS baselines, so translate the threshold onto this
           * playlist's own baseline using its captured offset. */
@@ -311,7 +358,7 @@ index eca5788..806be35 100644
          if (pls == seek_pls && snapped_to_segment) {
              /* The first keyframe of the target segment may have a slightly
               * lower DTS than the EXTINF-derived seg_start_ts. Relax the cutoff
-@@ -3084,7 +3256,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -3084,7 +3289,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
          pls->last_seq_no = pls->cur_seq_no;
      }
  
@@ -320,7 +367,7 @@ index eca5788..806be35 100644
  
      return 0;
  }
-@@ -3165,6 +3337,27 @@ static const AVOption hls_options[] = {
+@@ -3165,6 +3370,27 @@ static const AVOption hls_options[] = {
          OFFSET(seg_format_opts), AV_OPT_TYPE_DICT, {.str = NULL}, 0, 0, FLAGS},
      {"seg_max_retry", "Maximum number of times to reload a segment on error.",
       OFFSET(seg_max_retry), AV_OPT_TYPE_INT, {.i64 = 0}, 0, INT_MAX, FLAGS},
