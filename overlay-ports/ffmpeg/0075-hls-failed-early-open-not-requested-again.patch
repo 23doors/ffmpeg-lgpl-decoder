@@ -1,0 +1,160 @@
+hls: a segment whose early open failed is not requested again
+
+With http_multiple, hls opens the next segment while the current one is
+read. When that early open failed, its error was dropped: the segment was
+requested again when it was due, and the failure did not start the
+live_reload_timeout of seg_skip=live. Further early opens went on while
+segments failed, each holding up reading the current one. A server that
+stopped answering thus held a live input for several rounds of http's
+retries and timeouts.
+
+Keep the error for that segment: when it is due, it fails with it without
+another request, and the failure counts from the start of the early open.
+If the segment has left the playlist by then, its failure still ends the
+playlist when segment failures are final (seg_skip, live_reload_timeout).
+No early opens while segments fail.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index 41dffd2..2555c22 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -115,6 +115,10 @@ struct playlist {
+     int input_reuse;
+     AVIOContext *input_next;
+     int input_next_requested;
++    /* The error the early open of segment input_next_seq_no failed with,
++     * kept for when that segment is due (0: none). */
++    int input_next_error;
++    int64_t input_next_seq_no;
+     AVFormatContext *parent;
+     int index;
+     AVFormatContext *ctx;
+@@ -358,6 +362,7 @@ static void free_playlist_list(HLSContext *c)
+         pls->input_reuse = 0;
+         ff_format_io_close(c->ctx, &pls->input_next);
+         pls->input_next_requested = 0;
++        pls->input_next_error = 0;
+         if (pls->ctx) {
+             pls->ctx->pb = NULL;
+             avformat_close_input(&pls->ctx);
+@@ -1953,6 +1958,19 @@ check_segments:
+     return ret;
+ }
+ 
++/* Whether a segment that failed its retries fails the playlist rather than
++ * being skipped. A live playlist moves on without the segment; a finished one
++ * would just play on with a gap. With seg_skip=live, a live playlist whose
++ * segments have all failed for live_reload_timeout returns the error too, as
++ * its reloads would: skipping on would read nothing, without end. */
++static int segment_failure_is_final(HLSContext *c, struct playlist *v)
++{
++    return c->seg_skip == SEG_SKIP_NEVER ||
++           (c->seg_skip == SEG_SKIP_LIVE && v->finished) ||
++           (c->seg_skip == SEG_SKIP_LIVE &&
++            av_gettime_relative() - v->segment_error_time >= live_reload_timeout(v, c));
++}
++
+ static int read_playlist_data(void *opaque, uint8_t *buf, int buf_size)
+ {
+     struct playlist *v = opaque;
+@@ -1984,6 +2002,17 @@ restart:
+          * that long. */
+         int64_t open_start = av_gettime_relative();
+ 
++        /* A segment whose early open failed and that left the playlist before
++         * it was due counts as failed and skipped. */
++        if (v->input_next_error && v->input_next_seq_no < v->cur_seq_no &&
++            segment_failure_is_final(c, v)) {
++            av_log(v->parent, AV_LOG_ERROR, "Segment %"PRId64" of playlist %d failed too many times: %s\n",
++                   v->input_next_seq_no, v->index, av_err2str(v->input_next_error));
++            ret = v->input_next_error;
++            v->input_next_error = 0;
++            return ret;
++        }
++
+         /* load/update Media Initialization Section, if any */
+         ret = update_init_section(v, seg);
+         if (ret)
+@@ -1994,9 +2023,14 @@ restart:
+             v->cur_seg_offset = 0;
+             v->input_next_requested = 0;
+             ret = 0;
++        } else if (v->input_next_error && v->input_next_seq_no == v->cur_seq_no) {
++            /* Its early open failed after http's retries: that is its
++             * failure, without another request. */
++            ret = v->input_next_error;
+         } else {
+             ret = open_input(c, v, seg, &v->input);
+         }
++        v->input_next_error = 0;
+         if (ret < 0) {
+             if (ff_check_interrupt(c->interrupt_callback))
+                 return AVERROR_EXIT;
+@@ -2006,15 +2040,7 @@ restart:
+             if (!v->segment_error_time)
+                 v->segment_error_time = open_start;
+             if (segment_retries >= c->seg_max_retry) {
+-                /* A live playlist moves on without the segment; a finished
+-                 * one would just play on with a gap. With seg_skip=live, a
+-                 * live playlist whose segments have all failed for
+-                 * live_reload_timeout returns the error too, as its reloads
+-                 * would: skipping on would read nothing, without end. */
+-                if (c->seg_skip == SEG_SKIP_NEVER ||
+-                    (c->seg_skip == SEG_SKIP_LIVE && v->finished) ||
+-                    (c->seg_skip == SEG_SKIP_LIVE &&
+-                     av_gettime_relative() - v->segment_error_time >= live_reload_timeout(v, c))) {
++                if (segment_failure_is_final(c, v)) {
+                     av_log(v->parent, AV_LOG_ERROR, "Segment %"PRId64" of playlist %d failed too many times: %s\n",
+                            v->cur_seq_no, v->index, av_err2str(ret));
+                     /* The failed open closed the input. */
+@@ -2050,8 +2076,11 @@ restart:
+ 
+     seg = next_segment(v);
+     if (c->http_multiple == 1 && !v->input_next_requested &&
++        !v->segment_error_time &&
+         seg && seg->key_type == KEY_NONE && av_strstart(seg->url, "http", NULL) &&
+         !segment_reusable(v->input, current_segment(v), seg)) {
++        int64_t open_start = av_gettime_relative();
++
+         ret = open_input(c, v, seg, &v->input_next);
+         if (ret < 0) {
+             if (ff_check_interrupt(c->interrupt_callback))
+@@ -2059,6 +2088,14 @@ restart:
+             av_log(v->parent, AV_LOG_WARNING, "Failed to open segment %"PRId64" of playlist %d\n",
+                    v->cur_seq_no + 1,
+                    v->index);
++            /* A failed request counts from its start, and the segment fails
++             * with this error when it is due rather than being requested
++             * again (http has retried it). No more early opens while
++             * segments fail: they would only hold up reading this one. */
++            if (!v->segment_error_time)
++                v->segment_error_time = open_start;
++            v->input_next_error = ret;
++            v->input_next_seq_no = v->cur_seq_no + 1;
+         } else {
+             v->input_next_requested = 1;
+         }
+@@ -2744,6 +2781,7 @@ static int hls_read_header(AVFormatContext *s)
+             ff_format_io_close(pls->parent, &pls->input_next);
+             pls->input_next = NULL;
+             pls->input_next_requested = 0;
++            pls->input_next_error = 0;
+             pls->cur_seg_offset = 0;
+             pls->cur_init_section = NULL;
+             /* Reset EOF flag */
+@@ -2920,6 +2958,7 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+             pls->input_reuse = 0;
+             ff_format_io_close(pls->parent, &pls->input_next);
+             pls->input_next_requested = 0;
++            pls->input_next_error = 0;
+             if (pls->is_subtitle)
+                 avformat_close_input(&pls->ctx);
+             pls->needed = 0;
+@@ -3454,6 +3493,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+         pls->input_reuse = 0;
+         ff_format_io_close(pls->parent, &pls->input_next);
+         pls->input_next_requested = 0;
++        pls->input_next_error = 0;
+         av_packet_unref(pls->pkt);
+         pb->eof_reached = 0;
+         pb->error = 0;
