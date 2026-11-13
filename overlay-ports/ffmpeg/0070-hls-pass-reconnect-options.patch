@@ -9,11 +9,27 @@ reached only the first request, so a live playlist reload or a segment request
 that hit a 5xx or a dropped connection was not retried at the http level.
 reconnect_at_eof stays out: every segment request ends at EOF.
 
+With those options, http re-sends a request that failed on a kept-alive
+connection on new connections itself, so the demuxer no longer sends it once
+more on a new connection: that repeated every retry and wait (a server that
+holds requests without answering held a playlist reload for twice the
+retries). A kept-alive connection that cannot take the request (closed by the
+server, or for another host) still gets a new one, as does every request
+without reconnect_on_network_error.
+
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index 6957450..ed5c902 100644
+index 6957450..b85d061 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -715,6 +715,34 @@ static int is_native_http(AVIOContext *pb)
+@@ -258,6 +258,7 @@ typedef struct HLSContext {
+     int http_persistent;
+     int http_multiple;
+     int http_seekable;
++    int http_reconnect;             /* http re-sends failed requests on new connections */
+     int seg_max_retry;
+     AVIOContext *playlist_pb;
+     HLSCryptoContext  crypto_ctx;
+@@ -715,6 +716,46 @@ static int is_native_http(AVIOContext *pb)
  #endif
  }
  
@@ -45,15 +61,52 @@ index 6957450..ed5c902 100644
 +    return 0;
 +}
 +
++/* Whether a request that failed on a kept-alive connection is sent again on a
++ * new one. When the reconnect options passed on to http cover network errors,
++ * http has already re-sent it on new connections (and retried the statuses it
++ * reconnects on), so only a connection that could not take the request (closed
++ * by the server, or for another host) gets a new one: sending it again would
++ * repeat every retry and wait, doubling how long a failing server holds the
++ * read. */
++static int keepalive_retry_on_new_connection(const HLSContext *c, int err)
++{
++    return !c->http_reconnect || err == AVERROR_EOF || err == AVERROR(EINVAL);
++}
++
  static int open_url_keepalive(AVFormatContext *s, AVIOContext **pb,
                                const char *url, AVDictionary **options)
  {
-@@ -2397,6 +2425,8 @@ static int hls_read_header(AVFormatContext *s)
+@@ -790,6 +831,10 @@ static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
+             av_dict_free(&tmp);
+             return ret;
+         } else if (ret < 0) {
++            if (!keepalive_retry_on_new_connection(c, ret)) {
++                av_dict_free(&tmp);
++                return ret;
++            }
+             if (ret != AVERROR_EOF)
+                 av_log(s, AV_LOG_WARNING,
+                     "keepalive request failed for '%s' with error: '%s' when opening url, retrying with new connection\n",
+@@ -898,6 +943,8 @@ static int parse_playlist(HLSContext *c, const char *url,
+         if (ret == AVERROR_EXIT) {
+             return ret;
+         } else if (ret < 0) {
++            if (!keepalive_retry_on_new_connection(c, ret))
++                return ret;
+             if (ret != AVERROR_EOF)
+                 av_log(c->ctx, AV_LOG_WARNING,
+                     "keepalive request failed for '%s' with error: '%s' when parsing playlist\n",
+@@ -2397,6 +2444,13 @@ static int hls_read_header(AVFormatContext *s)
  
      if ((ret = ffio_copy_url_options(s->pb, &c->avio_opts)) < 0)
          return ret;
 +    if ((ret = copy_reconnect_options(s->pb, &c->avio_opts)) < 0)
 +        return ret;
++    {
++        int64_t on = 0;
++        if (av_opt_get_int(s->pb, "reconnect_on_network_error", AV_OPT_SEARCH_CHILDREN, &on) >= 0)
++            c->http_reconnect = on > 0;
++    }
  
      /* http_persistent and http_multiple auto-detection both rely on the
       * AVIOContext being backed by the builtin URLContext. Neither works
