@@ -45,6 +45,7 @@ vcpkg_from_github(
         0071-hls-live-reload-tolerance.patch
         0072-hls-seg-skip.patch
         0073-hls-export-window-at-eof.patch
+        0074-hls-failed-playlist-stays-failed.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

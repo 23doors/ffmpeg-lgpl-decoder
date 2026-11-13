@@ -1,0 +1,76 @@
+hls: a playlist that failed for good sends no more requests
+
+When read_data_continuous() returns a reload or segment error (a live
+playlist past live_reload_timeout, a 4xx reload, a VOD segment that failed
+its retries), the AVIOContext reading it records the error and its EOF flag.
+The demuxer reading the playlist (mpegts) seeks within the buffer, which
+clears the EOF flag, and reads again: the playlist then reloaded or opened
+the failed segment once more before the error reached the caller. A reload
+that never answers thus held the input for another round of http's retries
+and timeouts, and a playlist answering 404 got a second request.
+
+Keep the error in the playlist and return it on later reads without a
+request, until a seek (or the playlist being selected again) resets it.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index 92abac5..41dffd2 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -148,6 +148,8 @@ struct playlist {
+     /* When the segments of a live playlist started failing (0: the last one
+      * opened). */
+     int64_t segment_error_time;
++    /* The error the playlist failed with for good, kept until a seek. */
++    int read_error;
+ 
+     /* Currently active Media Initialization Section */
+     struct segment *cur_init_section;
+@@ -1951,7 +1953,7 @@ check_segments:
+     return ret;
+ }
+ 
+-static int read_data_continuous(void *opaque, uint8_t *buf, int buf_size)
++static int read_playlist_data(void *opaque, uint8_t *buf, int buf_size)
+ {
+     struct playlist *v = opaque;
+     HLSContext *c = v->parent->priv_data;
+@@ -2102,6 +2104,23 @@ restart:
+     goto restart;
+ }
+ 
++/* A playlist that failed for good (a reload or segment error, not its end)
++ * stays failed until a seek: the demuxer reading it may clear its buffer's
++ * EOF flag (an in-buffer seek) and read again, which must not send the failed
++ * requests again. */
++static int read_data_continuous(void *opaque, uint8_t *buf, int buf_size)
++{
++    struct playlist *v = opaque;
++    int ret;
++
++    if (v->read_error < 0)
++        return v->read_error;
++    ret = read_playlist_data(opaque, buf, buf_size);
++    if (ret < 0 && ret != AVERROR_EOF && ret != AVERROR_EXIT)
++        v->read_error = ret;
++    return ret;
++}
++
+ static int read_data_subtitle_segment(void *opaque, uint8_t *buf, int buf_size)
+ {
+     struct playlist *v = opaque;
+@@ -2884,6 +2903,7 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+             changed = 1;
+             pls->cur_seq_no = select_cur_seq_no(c, pls);
+             pls->first_read_seq_no = -1;
++            pls->read_error = 0;
+             pls->pb.pub.eof_reached = 0;
+             pls->pb.pub.error = 0;
+             if (c->cur_timestamp != AV_NOPTS_VALUE) {
+@@ -3430,6 +3450,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+         pls->input_read_done = 0;
+         pls->first_read_seq_no = -1;
+         pls->segment_error_time = 0;
++        pls->read_error = 0;
+         pls->input_reuse = 0;
+         ff_format_io_close(pls->parent, &pls->input_next);
+         pls->input_next_requested = 0;
