@@ -8,7 +8,7 @@ before returning EOF too. The read-only hls_window_at_eof option (always 1)
 lets a caller check for this behaviour.
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index 94b19e7..b32683c 100644
+index 26700b3..92abac5 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
 @@ -290,6 +290,7 @@ typedef struct HLSContext {
@@ -19,7 +19,7 @@ index 94b19e7..b32683c 100644
  
      /* Output timeline across live restarts: a restart lands wherever the
       * stream is now, and on streams whose timestamps restart (ad-stitched live
-@@ -2545,6 +2546,8 @@ static int hls_read_header(AVFormatContext *s)
+@@ -2550,6 +2551,8 @@ static int hls_read_header(AVFormatContext *s)
          return ret;
      if ((ret = copy_reconnect_options(s->pb, &c->avio_opts)) < 0)
          return ret;
@@ -28,7 +28,7 @@ index 94b19e7..b32683c 100644
      {
          int64_t on = 0;
          if (av_opt_get_int(s->pb, "reconnect_on_network_error", AV_OPT_SEARCH_CHILDREN, &on) >= 0)
-@@ -3273,6 +3276,11 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -3278,6 +3281,11 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
          update_live_window(c);
          return 0;
      }
@@ -40,7 +40,7 @@ index 94b19e7..b32683c 100644
      return AVERROR_EOF;
  }
  
-@@ -3600,6 +3608,9 @@ static const AVOption hls_options[] = {
+@@ -3605,6 +3613,9 @@ static const AVOption hls_options[] = {
      {"hls_live_restarts", "seeks that restarted at the live position because the window had moved past every "
          "segment the reader knew; such a seek lands wherever the stream is, not at the requested time",
          OFFSET(live_restarts), AV_OPT_TYPE_INT64, {.i64 = 0}, 0, INT64_MAX, EXPORT},
