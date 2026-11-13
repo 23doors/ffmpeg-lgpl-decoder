@@ -1,0 +1,202 @@
+hls: play on through failed live playlist reloads, then report the error
+
+A live playlist reload that failed once ended the playlist: reload_playlist()
+returned the error, the playlist's AVIOContext took it as its end, and
+hls_read_packet() treated that as the end of the stream, so a live input that
+lost its server for one reload reported a clean EOF.
+
+A reload that fails with a network error, a timeout, a server error, 429 or a
+garbled answer is now retried every half target duration (at least 0.5 s)
+while the segments the last load listed are played, for live_reload_timeout
+(default: three target durations, at least 20 s). A client error (4xx other
+than 429) fails at once. A load that fails half way leaves the playlist as it
+was (it also freed nothing before: the previous segments leaked). When the
+reads of a playlist end with an error, hls_read_packet() returns that error
+instead of an end of stream.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index ed5c902..02afe65 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -135,6 +135,9 @@ struct playlist {
+     int m3u8_hold_counters;
+     int64_t cur_seg_offset;
+     int64_t last_load_time;
++    /* When the reloads of a live playlist started failing (0: the last one
++     * succeeded). */
++    int64_t reload_error_time;
+ 
+     /* Currently active Media Initialization Section */
+     struct segment *cur_init_section;
+@@ -259,6 +262,7 @@ typedef struct HLSContext {
+     int http_multiple;
+     int http_seekable;
+     int seg_max_retry;
++    int64_t live_reload_timeout;
+     AVIOContext *playlist_pb;
+     HLSCryptoContext  crypto_ctx;
+ 
+@@ -918,6 +922,9 @@ static int parse_playlist(HLSContext *c, const char *url,
+     struct segment **prev_segments = NULL;
+     int prev_n_segments = 0;
+     int64_t prev_start_seq_no = -1;
++    int64_t prev_target_duration = 0;
++    int prev_finished = 0;
++    enum PlaylistType prev_type = PLS_TYPE_UNSPECIFIED;
+     int64_t load_start = av_gettime_relative();
+ 
+     if (is_http && !in && c->http_persistent && c->playlist_pb) {
+@@ -965,6 +972,9 @@ static int parse_playlist(HLSContext *c, const char *url,
+         prev_start_seq_no = pls->start_seq_no;
+         prev_segments = pls->segments;
+         prev_n_segments = pls->n_segments;
++        prev_target_duration = pls->target_duration;
++        prev_finished = pls->finished;
++        prev_type = pls->type;
+         pls->segments = NULL;
+         pls->n_segments = 0;
+ 
+@@ -1254,8 +1264,23 @@ static int parse_playlist(HLSContext *c, const char *url,
+     }
+ 
+ fail:
+-    if (pls)
++    if (prev_segments) {
++        /* A load that failed half way leaves the playlist as it was: a live
++         * reader may play on from it. */
++        free_segment_dynarray(pls->segments, pls->n_segments);
++        av_freep(&pls->segments);
++        pls->segments        = prev_segments;
++        pls->n_segments      = prev_n_segments;
++        pls->start_seq_no    = prev_start_seq_no;
++        pls->target_duration = prev_target_duration;
++        pls->finished        = prev_finished;
++        pls->type            = prev_type;
++    }
++    if (pls) {
+         pls->last_load_time = load_start;
++        if (ret >= 0)
++            pls->reload_error_time = 0;
++    }
+     av_free(new_url);
+     if (close_in)
+         ff_format_io_close(c->ctx, &in);
+@@ -1773,6 +1798,32 @@ static int playlist_needed(struct playlist *pls)
+     return 0;
+ }
+ 
++/* A reload refused with a client error (4xx other than 429) will not pass on a
++ * retry: the playlist is gone or not ours to read. A network error, a timeout,
++ * a server error or a garbled answer may. */
++static int reload_error_is_transient(int err)
++{
++    switch (err) {
++    case AVERROR_HTTP_BAD_REQUEST:
++    case AVERROR_HTTP_UNAUTHORIZED:
++    case AVERROR_HTTP_FORBIDDEN:
++    case AVERROR_HTTP_NOT_FOUND:
++    case AVERROR_HTTP_OTHER_4XX:
++        return 0;
++    default:
++        return 1;
++    }
++}
++
++/* How long a live playlist whose reloads fail is played on from the segments it
++ * listed last before the failure is returned. */
++static int64_t live_reload_timeout(const struct playlist *pls, const HLSContext *c)
++{
++    if (c->live_reload_timeout >= 0)
++        return c->live_reload_timeout;
++    return FFMAX(3 * pls->target_duration, 20 * AV_TIME_BASE);
++}
++
+ static int reload_playlist(struct playlist *v, HLSContext *c)
+ {
+     int ret = 0;
+@@ -1806,11 +1857,29 @@ reload:
+             return AVERROR_EOF;
+         if (!v->finished &&
+             av_gettime_relative() - v->last_load_time >= reload_interval) {
++            int64_t load_start = av_gettime_relative();
++
+             if ((ret = parse_playlist(c, v->url, v, NULL)) < 0) {
+-                if (ret != AVERROR_EXIT)
+-                    av_log(v->parent, AV_LOG_WARNING, "Failed to reload playlist %d\n",
+-                           v->index);
+-                return ret;
++                if (ret == AVERROR_EXIT)
++                    return ret;
++                if (!v->reload_error_time)
++                    v->reload_error_time = load_start;
++                if (!reload_error_is_transient(ret) ||
++                    av_gettime_relative() - v->reload_error_time >= live_reload_timeout(v, c)) {
++                    av_log(v->parent, AV_LOG_ERROR, "Failed to reload playlist %d: %s\n",
++                           v->index, av_err2str(ret));
++                    return ret;
++                }
++                /* A live server that fails a reload or two is not gone: play
++                 * on from what the last load listed and try again half a
++                 * target duration (at least half a second) later. */
++                av_log(v->parent, AV_LOG_WARNING,
++                       "Failed to reload playlist %d: %s, retrying\n",
++                       v->index, av_err2str(ret));
++                v->last_load_time = load_start;
++                reload_interval = FFMAX(v->target_duration / 2, AV_TIME_BASE / 2);
++                ret = 0;
++                goto check_segments;
+             }
+             /* If we need to reload the playlist again below (if
+              * there's still no more segments), switch to a reload
+@@ -1834,6 +1903,7 @@ reload:
+         } else {
+             av_log(v->parent, AV_LOG_WARNING, "The m3u8 list sequence may have been wrapped.\n");
+         }
++check_segments:
+         if (v->cur_seq_no >= v->start_seq_no + v->n_segments) {
+             if (v->finished || v->is_subtitle)
+                 return AVERROR_EOF;
+@@ -2598,6 +2668,7 @@ static int hls_read_header(AVFormatContext *s)
+             pls->cur_init_section = NULL;
+             /* Reset EOF flag */
+             pls->pb.pub.eof_reached = 0;
++            pls->pb.pub.error = 0;
+             /* Clear any buffered data */
+             pls->pb.pub.buf_end = pls->pb.pub.buf_ptr = pls->pb.pub.buffer;
+             /* Reset the position */
+@@ -2753,6 +2824,7 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+             pls->cur_seq_no = select_cur_seq_no(c, pls);
+             pls->first_read_seq_no = -1;
+             pls->pb.pub.eof_reached = 0;
++            pls->pb.pub.error = 0;
+             if (c->cur_timestamp != AV_NOPTS_VALUE) {
+                 /* catch up */
+                 pls->seek_timestamp = c->cur_timestamp +
+@@ -2916,6 +2988,10 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+                 if (ret < 0) {
+                     if (!avio_feof(&pls->pb.pub) && ret != AVERROR_EOF)
+                         return ret;
++                    /* The playlist could not be read on (a live reload that
++                     * kept failing): that is an error, not its end. */
++                    if (pls->pb.pub.error < 0)
++                        return pls->pb.pub.error;
+                     break;
+                 }
+ 
+@@ -3289,6 +3365,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+         pls->input_next_requested = 0;
+         av_packet_unref(pls->pkt);
+         pb->eof_reached = 0;
++        pb->error = 0;
+         /* Clear any buffered data */
+         pb->buf_end = pb->buf_ptr = pb->buffer;
+         /* Reset the pos, to let the mpegts/mov demuxer know we've seeked. */
+@@ -3439,6 +3516,8 @@ static const AVOption hls_options[] = {
+         OFFSET(seg_format_opts), AV_OPT_TYPE_DICT, {.str = NULL}, 0, 0, FLAGS},
+     {"seg_max_retry", "Maximum number of times to reload a segment on error.",
+      OFFSET(seg_max_retry), AV_OPT_TYPE_INT, {.i64 = 0}, 0, INT_MAX, FLAGS},
++    {"live_reload_timeout", "How long a live playlist plays on while its reloads fail, -1 for three target durations but at least 20 seconds",
++        OFFSET(live_reload_timeout), AV_OPT_TYPE_DURATION, {.i64 = -1}, -1, INT64_MAX, FLAGS},
+ #define EXPORT (FLAGS | AV_OPT_FLAG_EXPORT | AV_OPT_FLAG_READONLY)
+     {"hls_playlist_type", "type of the playlist the timeline follows (0 live, 1 event, 2 vod)",
+         OFFSET(live_playlist_type), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 2, EXPORT},
