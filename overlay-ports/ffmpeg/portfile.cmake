@@ -41,6 +41,7 @@ vcpkg_from_github(
         0067-hls-b5402d1ecf-measure-playlist-reload-interval-from-load-start.patch
         0068-hls-ee498f5e82-refresh-stale-playlist-when-seeking.patch
         0069-hls-export-live-window.patch
+        0070-hls-pass-reconnect-options.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

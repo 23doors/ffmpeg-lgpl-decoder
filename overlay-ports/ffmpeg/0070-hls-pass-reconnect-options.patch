@@ -1,0 +1,59 @@
+hls: pass the caller's reconnect options to the playlist and segment requests
+
+The hls demuxer opens its playlist reloads and segment requests with the
+options ffio_copy_url_options() copies from the master playlist's connection:
+headers, cookies, proxy, referer, rw_timeout and icy. A caller's reconnect,
+reconnect_streamed, reconnect_on_network_error, reconnect_on_http_error,
+reconnect_delay_max, reconnect_max_retries and reconnect_delay_total_max
+reached only the first request, so a live playlist reload or a segment request
+that hit a 5xx or a dropped connection was not retried at the http level.
+reconnect_at_eof stays out: every segment request ends at EOF.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index 6957450..ed5c902 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -715,6 +715,34 @@ static int is_native_http(AVIOContext *pb)
+ #endif
+ }
+ 
++/* The reconnect options set on the connection the demuxer was opened with, for
++ * the playlist reloads and segment requests it opens itself:
++ * ffio_copy_url_options() passes on only the headers, cookies and timeouts.
++ * reconnect_at_eof stays out, as every segment request ends at EOF. */
++static int copy_reconnect_options(AVIOContext *pb, AVDictionary **avio_opts)
++{
++    static const char *const opts[] = {
++        "reconnect", "reconnect_streamed", "reconnect_on_network_error",
++        "reconnect_on_http_error", "reconnect_delay_max",
++        "reconnect_max_retries", "reconnect_delay_total_max", NULL };
++    uint8_t *buf = NULL;
++    int ret;
++
++    for (const char *const *opt = opts; *opt; opt++) {
++        if (av_opt_get(pb, *opt, AV_OPT_SEARCH_CHILDREN, &buf) < 0)
++            continue;
++        if (buf[0] == '\0') {
++            av_freep(&buf);
++            continue;
++        }
++        ret = av_dict_set(avio_opts, *opt, buf, AV_DICT_DONT_STRDUP_VAL);
++        if (ret < 0)
++            return ret;
++    }
++
++    return 0;
++}
++
+ static int open_url_keepalive(AVFormatContext *s, AVIOContext **pb,
+                               const char *url, AVDictionary **options)
+ {
+@@ -2397,6 +2425,8 @@ static int hls_read_header(AVFormatContext *s)
+ 
+     if ((ret = ffio_copy_url_options(s->pb, &c->avio_opts)) < 0)
+         return ret;
++    if ((ret = copy_reconnect_options(s->pb, &c->avio_opts)) < 0)
++        return ret;
+ 
+     /* http_persistent and http_multiple auto-detection both rely on the
+      * AVIOContext being backed by the builtin URLContext. Neither works
