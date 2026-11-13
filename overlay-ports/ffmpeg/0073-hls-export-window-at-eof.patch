@@ -7,10 +7,10 @@ live playlist that stopped growing (m3u8_hold_counters). Export the window
 before returning EOF too.
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index 7add69b..ec413c0 100644
+index 381eab0..f95705f 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -3235,6 +3235,11 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -3270,6 +3270,11 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
          update_live_window(c);
          return 0;
      }

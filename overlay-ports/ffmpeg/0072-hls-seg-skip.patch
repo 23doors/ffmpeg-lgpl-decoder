@@ -6,8 +6,13 @@ silent gap. seg_skip=live keeps skipping on live playlists and returns the
 error on finished ones; seg_skip=never returns it on every playlist. The
 default (always) keeps the current behaviour.
 
+With seg_skip=live, a live playlist whose segments have all failed for
+live_reload_timeout (from the first failure since a segment last opened)
+returns the error as its reloads would: skipping on would read nothing,
+without end.
+
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index 02afe65..7add69b 100644
+index d889e46..381eab0 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
 @@ -94,6 +94,13 @@ enum PlaylistType {
@@ -24,22 +29,40 @@ index 02afe65..7add69b 100644
  /*
   * Each playlist has its own demuxer. If it currently is active,
   * it has an open AVIOContext too, and potentially an AVPacket
-@@ -262,6 +269,7 @@ typedef struct HLSContext {
-     int http_multiple;
+@@ -138,6 +145,9 @@ struct playlist {
+     /* When the reloads of a live playlist started failing (0: the last one
+      * succeeded). */
+     int64_t reload_error_time;
++    /* When the segments of a live playlist started failing (0: the last one
++     * opened). */
++    int64_t segment_error_time;
+ 
+     /* Currently active Media Initialization Section */
+     struct segment *cur_init_section;
+@@ -263,6 +273,7 @@ typedef struct HLSContext {
      int http_seekable;
+     int http_reconnect;             /* http re-sends failed requests on new connections */
      int seg_max_retry;
 +    int seg_skip;
      int64_t live_reload_timeout;
      AVIOContext *playlist_pb;
      HLSCryptoContext  crypto_ctx;
-@@ -1966,6 +1974,16 @@ restart:
+@@ -1984,7 +1995,24 @@ restart:
+             av_log(v->parent, AV_LOG_WARNING, "Failed to open segment %"PRId64" of playlist %d\n",
                     v->cur_seq_no,
                     v->index);
++            if (!v->segment_error_time)
++                v->segment_error_time = av_gettime_relative();
              if (segment_retries >= c->seg_max_retry) {
 +                /* A live playlist moves on without the segment; a finished
-+                 * one would just play on with a gap. */
++                 * one would just play on with a gap. With seg_skip=live, a
++                 * live playlist whose segments have all failed for
++                 * live_reload_timeout returns the error too, as its reloads
++                 * would: skipping on would read nothing, without end. */
 +                if (c->seg_skip == SEG_SKIP_NEVER ||
-+                    (c->seg_skip == SEG_SKIP_LIVE && v->finished)) {
++                    (c->seg_skip == SEG_SKIP_LIVE && v->finished) ||
++                    (c->seg_skip == SEG_SKIP_LIVE &&
++                     av_gettime_relative() - v->segment_error_time >= live_reload_timeout(v, c))) {
 +                    av_log(v->parent, AV_LOG_ERROR, "Segment %"PRId64" of playlist %d failed too many times: %s\n",
 +                           v->cur_seq_no, v->index, av_err2str(ret));
 +                    /* The failed open closed the input. */
@@ -49,15 +72,33 @@ index 02afe65..7add69b 100644
                  av_log(v->parent, AV_LOG_WARNING, "Segment %"PRId64" of playlist %d failed too many times, skipping\n",
                         v->cur_seq_no,
                         v->index);
-@@ -3516,6 +3534,11 @@ static const AVOption hls_options[] = {
+@@ -1996,6 +2024,7 @@ restart:
+             goto restart;
+         }
+         segment_retries = 0;
++        v->segment_error_time = 0;
+         just_opened = 1;
+         v->anchor_pending_seq_no = v->cur_seq_no;
+         if (v->first_read_seq_no < 0)
+@@ -3384,6 +3413,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+         ff_format_io_close(pls->parent, &pls->input);
+         pls->input_read_done = 0;
+         pls->first_read_seq_no = -1;
++        pls->segment_error_time = 0;
+         pls->input_reuse = 0;
+         ff_format_io_close(pls->parent, &pls->input_next);
+         pls->input_next_requested = 0;
+@@ -3540,7 +3570,12 @@ static const AVOption hls_options[] = {
          OFFSET(seg_format_opts), AV_OPT_TYPE_DICT, {.str = NULL}, 0, 0, FLAGS},
      {"seg_max_retry", "Maximum number of times to reload a segment on error.",
       OFFSET(seg_max_retry), AV_OPT_TYPE_INT, {.i64 = 0}, 0, INT_MAX, FLAGS},
+-    {"live_reload_timeout", "How long a live playlist plays on while its reloads fail, -1 for three target durations but at least 20 seconds",
 +    {"seg_skip", "Which playlists skip a segment that failed seg_max_retry times",
 +        OFFSET(seg_skip), AV_OPT_TYPE_INT, {.i64 = SEG_SKIP_ALWAYS}, SEG_SKIP_ALWAYS, SEG_SKIP_NEVER, FLAGS, .unit = "seg_skip"},
 +        {"always", "every playlist", 0, AV_OPT_TYPE_CONST, {.i64 = SEG_SKIP_ALWAYS}, 0, 0, FLAGS, .unit = "seg_skip"},
 +        {"live",   "only playlists that have not ended", 0, AV_OPT_TYPE_CONST, {.i64 = SEG_SKIP_LIVE}, 0, 0, FLAGS, .unit = "seg_skip"},
 +        {"never",  "no playlist: return the error", 0, AV_OPT_TYPE_CONST, {.i64 = SEG_SKIP_NEVER}, 0, 0, FLAGS, .unit = "seg_skip"},
-     {"live_reload_timeout", "How long a live playlist plays on while its reloads fail, -1 for three target durations but at least 20 seconds",
++    {"live_reload_timeout", "How long a live playlist plays on while its reloads or segments fail, -1 for three target durations but at least 20 seconds",
          OFFSET(live_reload_timeout), AV_OPT_TYPE_DURATION, {.i64 = -1}, -1, INT64_MAX, FLAGS},
  #define EXPORT (FLAGS | AV_OPT_FLAG_EXPORT | AV_OPT_FLAG_READONLY)
+     {"hls_playlist_type", "type of the playlist the timeline follows (0 live, 1 event, 2 vod)",
