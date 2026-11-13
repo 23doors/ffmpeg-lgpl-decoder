@@ -4,13 +4,31 @@ The live window is exported after each packet, so the reload that ends the
 input never reached it: a playlist that gets EXT-X-ENDLIST without a new
 segment ends with hls_finished still 0, and a caller cannot tell it from a
 live playlist that stopped growing (m3u8_hold_counters). Export the window
-before returning EOF too.
+before returning EOF too. The read-only hls_window_at_eof option (always 1)
+lets a caller check for this behaviour.
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index 381eab0..f95705f 100644
+index 94b19e7..b32683c 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -3270,6 +3270,11 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -290,6 +290,7 @@ typedef struct HLSContext {
+     int64_t live_media_sequence;
+     int64_t live_playlist_age;      /* how old the playlist's last load was at the update */
+     int64_t live_restarts;          /* seeks that restarted at the live position (see hls_read_seek) */
++    int live_window_at_eof;         /* always 1: the window is exported at the end of the input too */
+ 
+     /* Output timeline across live restarts: a restart lands wherever the
+      * stream is now, and on streams whose timestamps restart (ad-stitched live
+@@ -2545,6 +2546,8 @@ static int hls_read_header(AVFormatContext *s)
+         return ret;
+     if ((ret = copy_reconnect_options(s->pb, &c->avio_opts)) < 0)
+         return ret;
++    /* Read-only options get no default. */
++    c->live_window_at_eof = 1;
+     {
+         int64_t on = 0;
+         if (av_opt_get_int(s->pb, "reconnect_on_network_error", AV_OPT_SEARCH_CHILDREN, &on) >= 0)
+@@ -3273,6 +3276,11 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
          update_live_window(c);
          return 0;
      }
@@ -22,3 +40,13 @@ index 381eab0..f95705f 100644
      return AVERROR_EOF;
  }
  
+@@ -3600,6 +3608,9 @@ static const AVOption hls_options[] = {
+     {"hls_live_restarts", "seeks that restarted at the live position because the window had moved past every "
+         "segment the reader knew; such a seek lands wherever the stream is, not at the requested time",
+         OFFSET(live_restarts), AV_OPT_TYPE_INT64, {.i64 = 0}, 0, INT64_MAX, EXPORT},
++    {"hls_window_at_eof", "the window is exported when the input ends too, so hls_finished tells an ended playlist "
++        "from a live one that stopped",
++        OFFSET(live_window_at_eof), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, EXPORT},
+ #undef EXPORT
+     {NULL}
+ };
