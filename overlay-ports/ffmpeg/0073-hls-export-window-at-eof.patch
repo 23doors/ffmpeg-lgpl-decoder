@@ -1,0 +1,24 @@
+hls: export the live window when the input ends
+
+The live window is exported after each packet, so the reload that ends the
+input never reached it: a playlist that gets EXT-X-ENDLIST without a new
+segment ends with hls_finished still 0, and a caller cannot tell it from a
+live playlist that stopped growing (m3u8_hold_counters). Export the window
+before returning EOF too.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index 7add69b..ec413c0 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -3235,6 +3235,11 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+         update_live_window(c);
+         return 0;
+     }
++    /* The reload that ends the input (EXT-X-ENDLIST without a new segment, or
++     * m3u8_hold_counters reloads without one) returns no packet: export the
++     * window it left, so a caller can tell an ended playlist from a live one
++     * that stopped. */
++    update_live_window(c);
+     return AVERROR_EOF;
+ }
+ 
