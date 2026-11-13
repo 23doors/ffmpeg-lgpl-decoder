@@ -43,6 +43,7 @@ vcpkg_from_github(
         0069-hls-export-live-window.patch
         0070-hls-pass-reconnect-options.patch
         0071-hls-live-reload-tolerance.patch
+        0072-hls-seg-skip.patch
 )
 
 if(SOURCE_PATH MATCHES " ")
