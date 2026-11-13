@@ -6,16 +6,20 @@ hls_read_packet() treated that as the end of the stream, so a live input that
 lost its server for one reload reported a clean EOF.
 
 A reload that fails with a network error, a timeout, a server error, 429 or a
-garbled answer is now retried every half target duration (at least 0.5 s)
-while the segments the last load listed are played, for live_reload_timeout
-(default: three target durations, at least 20 s). A client error (4xx other
-than 429) fails at once. A load that fails half way leaves the playlist as it
-was (it also freed nothing before: the previous segments leaked). When the
-reads of a playlist end with an error, hls_read_packet() returns that error
-instead of an end of stream.
+garbled answer is now retried while the segments the last load listed are
+played (the next attempt comes after the usual reload interval from the failed
+load, and every half target duration, at least 0.5 s, once they have run out),
+for live_reload_timeout (default: three target durations, at least 20 s). A
+client error (4xx other than 429) fails at once. That includes 408, which
+FFmpeg reports as AVERROR_HTTP_OTHER_4XX like the other 4xx answers: a 408 gets
+only the http-level retries of reconnect_on_http_error. A load that fails half
+way leaves the playlist as it was (it also freed nothing before: the previous
+segments leaked). When the reads of a playlist end with an error,
+hls_read_packet() returns that error instead of an end of stream; a subtitle
+playlist, which skips its failed segments itself, still only ends its track.
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index b85d061..d889e46 100644
+index b85d061..46e8ac5 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
 @@ -135,6 +135,9 @@ struct playlist {
@@ -172,18 +176,21 @@ index b85d061..d889e46 100644
              if (c->cur_timestamp != AV_NOPTS_VALUE) {
                  /* catch up */
                  pls->seek_timestamp = c->cur_timestamp +
-@@ -2940,6 +3012,10 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -2940,6 +3012,13 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
                  if (ret < 0) {
                      if (!avio_feof(&pls->pb.pub) && ret != AVERROR_EOF)
                          return ret;
 +                    /* The playlist could not be read on (a live reload that
-+                     * kept failing): that is an error, not its end. */
-+                    if (pls->pb.pub.error < 0)
++                     * kept failing): that is an error, not its end. A subtitle
++                     * playlist skips its failed segments itself
++                     * (read_subtitle_packet()) and may end with the last
++                     * one's error still set: its end only ends the track. */
++                    if (!pls->is_subtitle && pls->pb.pub.error < 0)
 +                        return pls->pb.pub.error;
                      break;
                  }
  
-@@ -3313,6 +3389,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -3313,6 +3392,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
          pls->input_next_requested = 0;
          av_packet_unref(pls->pkt);
          pb->eof_reached = 0;
@@ -191,7 +198,7 @@ index b85d061..d889e46 100644
          /* Clear any buffered data */
          pb->buf_end = pb->buf_ptr = pb->buffer;
          /* Reset the pos, to let the mpegts/mov demuxer know we've seeked. */
-@@ -3463,6 +3540,8 @@ static const AVOption hls_options[] = {
+@@ -3463,6 +3543,8 @@ static const AVOption hls_options[] = {
          OFFSET(seg_format_opts), AV_OPT_TYPE_DICT, {.str = NULL}, 0, 0, FLAGS},
      {"seg_max_retry", "Maximum number of times to reload a segment on error.",
       OFFSET(seg_max_retry), AV_OPT_TYPE_INT, {.i64 = 0}, 0, INT_MAX, FLAGS},

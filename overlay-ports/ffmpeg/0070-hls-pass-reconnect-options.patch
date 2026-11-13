@@ -8,6 +8,9 @@ reconnect_delay_max, reconnect_max_retries and reconnect_delay_total_max
 reached only the first request, so a live playlist reload or a segment request
 that hit a 5xx or a dropped connection was not retried at the http level.
 reconnect_at_eof stays out: every segment request ends at EOF.
+The list is the demuxer's own copy of ffio_copy_url_options()'s loop, kept
+in hls.c for the pack; an upstream change would rather add the names to that
+list in aviobuf.c, which dash would share.
 
 With those options, http re-sends a request that failed on a kept-alive
 connection on new connections itself, so the demuxer no longer sends it once
