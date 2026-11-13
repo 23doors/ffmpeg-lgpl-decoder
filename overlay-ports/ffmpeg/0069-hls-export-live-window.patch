@@ -1,5 +1,5 @@
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index eca5788..cfdfa83 100644
+index eca5788..6957450 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
 @@ -165,6 +165,19 @@ struct playlist {
@@ -22,7 +22,7 @@ index eca5788..cfdfa83 100644
      int seek_stream_index; /* into subdemuxer stream array */
  
      /* Renditions associated with this playlist, if any.
-@@ -248,6 +261,31 @@ typedef struct HLSContext {
+@@ -248,6 +261,32 @@ typedef struct HLSContext {
      int seg_max_retry;
      AVIOContext *playlist_pb;
      HLSCryptoContext  crypto_ctx;
@@ -51,10 +51,11 @@ index eca5788..cfdfa83 100644
 +    /* How far the first packet after a live seek may be from where the
 +     * playlist puts it before the timeline is placed anew (0: always). */
 +    int64_t restart_tolerance;
++    struct playlist *restart_pls;   /* whose first packet places the timeline */
  } HLSContext;
  
  static void free_segment_dynarray(struct segment **segments, int n_segments)
-@@ -358,6 +396,8 @@ static struct playlist *new_playlist(HLSContext *c, const char *url,
+@@ -358,6 +397,8 @@ static struct playlist *new_playlist(HLSContext *c, const char *url,
      pls->ts_offset = AV_NOPTS_VALUE;
      pls->seek_timestamp = AV_NOPTS_VALUE;
      pls->first_read_seq_no = -1;
@@ -63,7 +64,7 @@ index eca5788..cfdfa83 100644
  
      pls->is_id3_timestamped = -1;
      pls->id3_mpegts_timestamp = AV_NOPTS_VALUE;
-@@ -1140,6 +1180,29 @@ static int parse_playlist(HLSContext *c, const char *url,
+@@ -1140,6 +1181,29 @@ static int parse_playlist(HLSContext *c, const char *url,
              }
          }
      }
@@ -93,7 +94,7 @@ index eca5788..cfdfa83 100644
      if (prev_segments) {
          if (pls->start_seq_no > prev_start_seq_no && c->first_timestamp != AV_NOPTS_VALUE &&
              c->first_timestamp_pls == pls) {
-@@ -1816,6 +1879,7 @@ restart:
+@@ -1816,6 +1880,7 @@ restart:
          }
          segment_retries = 0;
          just_opened = 1;
@@ -101,7 +102,7 @@ index eca5788..cfdfa83 100644
          if (v->first_read_seq_no < 0)
              v->first_read_seq_no = v->cur_seq_no;
      }
-@@ -2047,13 +2111,32 @@ static void add_metadata_from_renditions(AVFormatContext *s, struct playlist *pl
+@@ -2047,13 +2112,32 @@ static void add_metadata_from_renditions(AVFormatContext *s, struct playlist *pl
  
  /* if timestamp was in valid range: returns 1 and sets seq_no
   * if not: returns 0 and sets seq_no to closest segment */
@@ -136,7 +137,7 @@ index eca5788..cfdfa83 100644
  
      if (timestamp < pos) {
          /* Seeking before the start of the playlist, clamp to the first segment. */
-@@ -2290,6 +2373,8 @@ static int hls_close(AVFormatContext *s)
+@@ -2290,6 +2374,8 @@ static int hls_close(AVFormatContext *s)
      return 0;
  }
  
@@ -145,17 +146,18 @@ index eca5788..cfdfa83 100644
  static int hls_read_header(AVFormatContext *s)
  {
      HLSContext *c = s->priv_data;
-@@ -2300,6 +2385,9 @@ static int hls_read_header(AVFormatContext *s)
+@@ -2300,6 +2386,10 @@ static int hls_read_header(AVFormatContext *s)
      c->interrupt_callback = &s->interrupt_callback;
  
      c->first_packet = 1;
 +    c->ts_shift = 0;
 +    c->restart_target = AV_NOPTS_VALUE;
 +    c->restart_tolerance = 0;
++    c->restart_pls = NULL;
      c->first_timestamp = AV_NOPTS_VALUE;
      c->first_timestamp_pls = NULL;
      c->first_timestamp_locked = 0;
-@@ -2607,6 +2695,7 @@ static int hls_read_header(AVFormatContext *s)
+@@ -2607,6 +2697,7 @@ static int hls_read_header(AVFormatContext *s)
      }
  
      update_noheader_flag(s);
@@ -163,7 +165,7 @@ index eca5788..cfdfa83 100644
  
      return 0;
  }
-@@ -2721,6 +2810,56 @@ static int metadata_has_changed(const AVDictionary *current,
+@@ -2721,6 +2812,56 @@ static int metadata_has_changed(const AVDictionary *current,
      return 0;
  }
  
@@ -220,7 +222,7 @@ index eca5788..cfdfa83 100644
  static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
  {
      HLSContext *c = s->priv_data;
-@@ -2811,6 +2950,19 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -2811,6 +2952,19 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
                      ff_hls_senc_decrypt_frame(codec_id, &c->crypto_ctx, pls->pkt);
                  }
  
@@ -240,14 +242,20 @@ index eca5788..cfdfa83 100644
                  if (pls->seek_timestamp == AV_NOPTS_VALUE)
                      break;
  
-@@ -2926,11 +3078,40 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -2926,11 +3080,59 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
              }
          }
  
-+        if (c->restart_target != AV_NOPTS_VALUE &&
-+            (pkt->pts != AV_NOPTS_VALUE || pkt->dts != AV_NOPTS_VALUE)) {
-+            int64_t t = av_rescale_q(pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts,
-+                                     ist->time_base, AV_TIME_BASE_Q);
++        if (c->restart_target != AV_NOPTS_VALUE) {
++            /* Placed by the seek playlist's first packet, whichever playlist
++             * returns first: renditions can start a segment apart. */
++            struct playlist *ref = c->restart_pls && c->restart_pls != pls &&
++                                   c->restart_pls->pkt->data ? c->restart_pls : NULL;
++            AVPacket *ref_pkt = ref ? ref->pkt : pkt;
++            AVRational ref_tb = ref ? get_timebase(ref) : ist->time_base;
++            int64_t ref_ts = ref_pkt->pts != AV_NOPTS_VALUE ? ref_pkt->pts : ref_pkt->dts;
++            if (ref_ts != AV_NOPTS_VALUE && (ref || !c->restart_pls || c->restart_pls == pls)) {
++            int64_t t = av_rescale_q(ref_ts, ref_tb, AV_TIME_BASE_Q);
 +            if (!c->restart_tolerance ||
 +                FFABS(t + c->ts_shift - c->restart_target) > c->restart_tolerance) {
 +                c->ts_shift = c->restart_target - t;
@@ -255,6 +263,8 @@ index eca5788..cfdfa83 100644
 +                       t + c->ts_shift, c->ts_shift);
 +            }
 +            c->restart_target = AV_NOPTS_VALUE;
++            c->restart_pls    = NULL;
++            }
 +        }
 +        if (c->ts_shift) {
 +            int64_t shift = av_rescale_q(c->ts_shift, AV_TIME_BASE_Q, ist->time_base);
@@ -270,6 +280,17 @@ index eca5788..cfdfa83 100644
      return AVERROR_EOF;
  }
  
++/* The segment of `pls` as far from its live end as `seq_no` is from the end
++ * of `ref` (renditions of one stream share their segmentation). */
++static int64_t seq_no_at_same_distance_from_end(struct playlist *pls, struct playlist *ref,
++                                                int64_t seq_no)
++{
++    int64_t distance = ref->start_seq_no + ref->n_segments - seq_no;
++    int64_t mapped   = pls->start_seq_no + pls->n_segments - distance;
++    return av_clip64(mapped, pls->start_seq_no,
++                     pls->start_seq_no + FFMAX(pls->n_segments - 1, 0));
++}
++
 +/* Where a live playlist starts playing: live_start_index from the end (or start). */
 +static int64_t live_start_seq_no(HLSContext *c, struct playlist *pls)
 +{
@@ -281,7 +302,7 @@ index eca5788..cfdfa83 100644
  static int hls_read_seek(AVFormatContext *s, int stream_index,
                                 int64_t timestamp, int flags)
  {
-@@ -2941,6 +3122,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -2941,6 +3143,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
      int64_t first_timestamp, seek_timestamp, duration;
      int64_t seq_no, seg_start_ts;
      int snapped_to_segment = 0;
@@ -289,7 +310,7 @@ index eca5788..cfdfa83 100644
  
      if ((flags & AVSEEK_FLAG_BYTE) || (c->ctx->ctx_flags & AVFMTCTX_UNSEEKABLE))
          return AVERROR(ENOSYS);
-@@ -2948,6 +3130,10 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -2948,6 +3151,10 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
      seek_timestamp = av_rescale_q_rnd(timestamp,
                                        s->streams[stream_index]->time_base,
                                        AV_TIME_BASE_Q, AV_ROUND_DOWN);
@@ -300,7 +321,7 @@ index eca5788..cfdfa83 100644
  
      /* find the playlist with the specified stream */
      for (i = 0; i < c->n_playlists; i++) {
-@@ -2967,21 +3153,12 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -2967,21 +3174,12 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
       * and sliding-window playlists may also have expired some. Refresh before
       * resolving a seek that may fall outside the loaded window, rate limited
       * to the minimum reload interval (RFC 8216 6.3.4). */
@@ -328,7 +349,7 @@ index eca5788..cfdfa83 100644
  
      first_timestamp = c->first_timestamp == AV_NOPTS_VALUE ?
                        0 : c->first_timestamp;
-@@ -2994,12 +3171,36 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -2994,12 +3192,38 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
          0 < duration && duration < seek_timestamp - first_timestamp)
          return AVERROR(EIO);
  
@@ -340,6 +361,7 @@ index eca5788..cfdfa83 100644
 +        c->live_restarts++;
 +        c->restart_target    = seek_timestamp + c->ts_shift;
 +        c->restart_tolerance = 0;
++        c->restart_pls       = seek_pls;
 +        seq_no = live_start_seq_no(c, seek_pls);
 +        seg_start_ts = seek_timestamp;
 +        av_log(s, AV_LOG_VERBOSE, "Seek on playlist %d after its window moved on: "
@@ -360,13 +382,14 @@ index eca5788..cfdfa83 100644
 +         * the segment's start when it is more than a target duration off. */
 +        c->restart_target    = seg_start_ts + c->ts_shift;
 +        c->restart_tolerance = FFMAX(seek_pls->target_duration, AV_TIME_BASE);
++        c->restart_pls       = seek_pls;
 +    }
 +
 +    if (!tune && s->streams[stream_index]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
          flags & AVSEEK_FLAG_BACKWARD && !(flags & AVSEEK_FLAG_ANY)) {
          /* Seeking to start of segment ensures we seek to a keyframe located
           * before the given timestamp. */
-@@ -3056,13 +3257,28 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -3056,13 +3280,33 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
           * baseline (whichever stream produced the first packet). Streams can
           * have different DTS baselines, so translate the threshold onto this
           * playlist's own baseline using its captured offset. */
@@ -380,14 +403,19 @@ index eca5788..cfdfa83 100644
          pls->seek_flags = flags;
  
 -        if (pls == seek_pls && snapped_to_segment) {
-+        if (tune && pls != seek_pls) {
-+            /* Its copy is as old as the seek playlist's was: reload it too, so
-+             * every rendition restarts at its live position. */
-+            if (!pls->finished && pls->needed &&
++        if (pls != seek_pls && !pls->finished) {
++            /* A live rendition's copy is as old as the seek playlist's was:
++             * reload it too. Map it by its own anchor when it has one, else
++             * as far from its live end as the seek playlist's segment is. */
++            if (pls->needed &&
 +                av_gettime_relative() - pls->last_load_time >= default_reload_interval(pls))
 +                parse_playlist(c, pls->url, pls, NULL);
-+            pls->cur_seq_no = live_start_seq_no(c, pls);
++            if (tune || pls->anchor_ts == AV_NOPTS_VALUE || pls->anchor_lost)
++                pls->cur_seq_no = seq_no_at_same_distance_from_end(pls, seek_pls, seq_no);
++            else
++                find_timestamp_in_playlist(c, pls, seek_timestamp, &pls->cur_seq_no, NULL);
 +            pls->seek_stream_index = -1;
++            pls->seek_flags |= AVSEEK_FLAG_ANY;
 +            pls->last_seq_no = pls->cur_seq_no;
 +            continue;
 +        }
@@ -397,7 +425,7 @@ index eca5788..cfdfa83 100644
              /* The first keyframe of the target segment may have a slightly
               * lower DTS than the EXTINF-derived seg_start_ts. Relax the cutoff
               * to not discard the keyframe and land one segment late. */
-@@ -3084,7 +3300,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -3084,7 +3328,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
          pls->last_seq_no = pls->cur_seq_no;
      }
  
@@ -406,7 +434,7 @@ index eca5788..cfdfa83 100644
  
      return 0;
  }
-@@ -3165,6 +3381,27 @@ static const AVOption hls_options[] = {
+@@ -3165,6 +3409,27 @@ static const AVOption hls_options[] = {
          OFFSET(seg_format_opts), AV_OPT_TYPE_DICT, {.str = NULL}, 0, 0, FLAGS},
      {"seg_max_retry", "Maximum number of times to reload a segment on error.",
       OFFSET(seg_max_retry), AV_OPT_TYPE_INT, {.i64 = 0}, 0, INT_MAX, FLAGS},
