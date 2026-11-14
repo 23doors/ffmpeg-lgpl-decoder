@@ -1,0 +1,102 @@
+hls: a live subtitle segment that failed: the next one a target duration later
+
+A subtitle segment whose request fails (a 2 s timeout with 0079) reads as
+an empty segment, and read_subtitle_packet() goes on with the next listed
+one in the same call. The subtitles are read in the call that reads the
+media, so behind the live edge a subtitle server that stalls holds the
+media for 2 s per listed segment, and on short segments, where each
+failure takes longer than a segment lasts, for as long as segments may
+fail (0078).
+
+After a live playlist's segment failed, return its end for now and ask
+for the next segment a target duration later, as segments come: the
+media is held for 2 s at most once a target duration, until the playlist
+fails. A VOD playlist goes on at once, as before. The segment's read
+callback waits as well: hls_read_packet()'s avio_feof() at the end of a
+segment reads on, which would ask for the next one before it is due.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index 6ceb7d4..31d89be 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -161,6 +161,10 @@ struct playlist {
+     /* When the segments of a live playlist started failing (0: the last one
+      * opened). */
+     int64_t segment_error_time;
++    /* A live subtitle playlist's segment failed to open in this read, and
++     * when the next one may be asked for. */
++    int subtitle_segment_failed;
++    int64_t subtitle_retry_time;
+     /* The error the playlist failed with for good, kept until a seek. */
+     int read_error;
+ 
+@@ -2256,7 +2260,11 @@ static int read_data_subtitle_segment(void *opaque, uint8_t *buf, int buf_size)
+     int ret;
+     struct segment *seg;
+ 
+-    if (!v->needed || v->cur_seq_no - v->start_seq_no >= v->n_segments) {
++    /* Not before the next segment is due after a failed one
++     * (read_subtitle_packet()): hls_read_packet()'s avio_feof() reads on at
++     * the end of a segment. */
++    if (!v->needed || v->subtitle_retry_time ||
++        v->cur_seq_no - v->start_seq_no >= v->n_segments) {
+         return AVERROR_EOF;
+     } else {
+         seg = current_segment(v);
+@@ -2277,6 +2285,7 @@ static int read_data_subtitle_segment(void *opaque, uint8_t *buf, int buf_size)
+                 v->segment_error_time = open_start;
+             if (av_gettime_relative() - v->segment_error_time >= live_reload_timeout(v, c))
+                 v->read_error = ret;
++            v->subtitle_segment_failed = 1;
+             return ret;
+         }
+         v->segment_error_time = 0;
+@@ -2473,6 +2482,11 @@ static int read_subtitle_packet(struct playlist *v, AVPacket *pkt)
+ 
+     if (v->read_error < 0)
+         return AVERROR_EOF;
++    if (v->subtitle_retry_time) {
++        if (av_gettime_relative() < v->subtitle_retry_time)
++            return AVERROR_EOF;
++        v->subtitle_retry_time = 0;
++    }
+ 
+ restart:
+     ret = reload_playlist(v, c);
+@@ -2524,6 +2538,18 @@ restart:
+     FFSWAP(int, v->n_prev_cues, v->n_cur_cues);
+     v->prev_cue_pos = 0;
+ 
++    /* The subtitles are read in the same call as the media: after a live
++     * segment that failed (its request given up after 2 s), the next one is
++     * asked for a target duration later, as it comes, so a subtitle server
++     * that stalls holds the media for 2 s at most that often. */
++    if (v->subtitle_segment_failed) {
++        v->subtitle_segment_failed = 0;
++        if (!v->finished) {
++            v->subtitle_retry_time = av_gettime_relative() + v->target_duration;
++            return AVERROR_EOF;
++        }
++    }
++
+     goto restart;
+ }
+ 
+@@ -3218,6 +3244,8 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+             pls->first_read_seq_no = -1;
+             pls->read_error = 0;
+             pls->segment_error_time = 0;
++            pls->subtitle_segment_failed = 0;
++            pls->subtitle_retry_time = 0;
+             pls->pb.pub.eof_reached = 0;
+             pls->pb.pub.error = 0;
+             if (c->cur_timestamp != AV_NOPTS_VALUE) {
+@@ -3809,6 +3837,8 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+         pls->input_read_done = 0;
+         pls->first_read_seq_no = -1;
+         pls->segment_error_time = 0;
++        pls->subtitle_segment_failed = 0;
++        pls->subtitle_retry_time = 0;
+         pls->read_error = 0;
+         pls->input_reuse = 0;
+         ff_format_io_close(pls->parent, &pls->input_next);

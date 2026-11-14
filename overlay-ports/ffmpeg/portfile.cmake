@@ -58,6 +58,7 @@ vcpkg_from_github(
         0084-hls-subtitles-shared-timeline.patch
         0085-hls-webvtt-cues-repeated-across-segments.patch
         0086-hls-cue-time-out-of-range-not-unwrapped.patch
+        0087-hls-failed-live-subtitle-segment-next-one-later.patch
 )
 
 if(SOURCE_PATH MATCHES " ")
