@@ -1,0 +1,54 @@
+hls: a subtitle playlist no longer selected is closed
+
+recheck_discard_flags() closes a playlist whose streams were all
+discarded only at the first call; later, a subtitle playlist turned off
+keeps its segment open and its WebVTT context, and a live one is reloaded
+on as long as the input plays.
+
+Close a subtitle playlist's segment, WebVTT context, playlist connection
+and buffered cue when its streams are discarded at any time; it is
+reloaded and opened again if they are enabled.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index 8753584..6c24906 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -3032,6 +3032,14 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+         if (cur_needed && !pls->needed) {
+             pls->needed = 1;
+             changed = 1;
++            if (pls->is_subtitle) {
++                /* A subtitle playlist that stopped being read on its own
++                 * (reload_playlist()) may still hold the segment it read. */
++                ff_format_io_close(pls->parent, &pls->input);
++                pls->input_read_done = 0;
++                pls->input_reuse = 0;
++                avformat_close_input(&pls->ctx);
++            }
+             pls->cur_seq_no = select_cur_seq_no(c, pls);
+             pls->first_read_seq_no = -1;
+             pls->read_error = 0;
+@@ -3046,15 +3054,21 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+                 pls->seek_stream_index = -1;
+             }
+             av_log(s, AV_LOG_INFO, "Now receiving playlist %d, segment %"PRId64"\n", i, pls->cur_seq_no);
+-        } else if (first && !cur_needed && pls->needed) {
++        } else if ((first || pls->is_subtitle) && !cur_needed && pls->needed) {
++            /* A subtitle playlist no longer selected is closed at once: its
++             * segment, the subtitle demuxer and its connections. Selected
++             * again, it starts afresh at the current position. */
+             ff_format_io_close(pls->parent, &pls->input);
+             pls->input_read_done = 0;
+             pls->input_reuse = 0;
+             ff_format_io_close(pls->parent, &pls->input_next);
+             pls->input_next_requested = 0;
+             pls->input_next_error = 0;
+-            if (pls->is_subtitle)
++            if (pls->is_subtitle) {
+                 avformat_close_input(&pls->ctx);
++                ff_format_io_close(pls->parent, &pls->playlist_pb);
++                av_packet_unref(pls->pkt);
++            }
+             pls->needed = 0;
+             changed = 1;
+             av_log(s, AV_LOG_INFO, "No longer receiving playlist %d\n", i);

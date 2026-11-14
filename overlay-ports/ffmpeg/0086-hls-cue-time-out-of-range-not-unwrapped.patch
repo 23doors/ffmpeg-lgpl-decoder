@@ -1,0 +1,35 @@
+hls: a cue time far outside any clock is not unwrapped
+
+nearest_period() (0083) subtracts the reference from a cue's time and adds
+half a period: a cue time the server wrote out of all range, or the
+INT64_MIN of a rescale that overflowed, makes that arithmetic overflow, so
+the result is undefined.
+
+Leave a time at or beyond 2^61 (of either the cue or the reference) as it
+is, so the difference and half a period stay in range; a real MPEG-TS
+time is 33 bits.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index cbf5d18..6ceb7d4 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -2413,11 +2413,16 @@ static int64_t media_position(HLSContext *c)
+ }
+ 
+ /* The MPEG-TS time of a cue is on the 33 bit PES clock, this is the period
+- * of that clock nearest to ref, both in MPEG_TIME_BASE_Q. */
++ * of that clock nearest to ref, both in MPEG_TIME_BASE_Q. A time far outside
++ * any clock (a cue's own bogus time, a failed rescale) is left as it is. */
+ static int64_t nearest_period(int64_t pts, int64_t ref)
+ {
+-    const int64_t period = 1LL << 33, half = 1LL << 32;
+-    int64_t d = pts - ref;
++    const int64_t period = 1LL << 33, half = 1LL << 32, limit = 1LL << 61;
++    int64_t d;
++
++    if (pts <= -limit || pts >= limit || ref <= -limit || ref >= limit)
++        return pts;
++    d = pts - ref;
+ 
+     return pts - (d >= 0 ? d + half : d - half) / period * period;
+ }

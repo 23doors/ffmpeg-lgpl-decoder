@@ -49,6 +49,15 @@ vcpkg_from_github(
         0075-hls-failed-early-open-requested-once-more.patch
         0076-hls-closed-keepalive-connection-not-kept.patch
         0077-hls-recovered-interrupt-not-the-end-error.patch
+        0078-hls-failed-subtitle-playlist-ends-its-track.patch
+        0079-hls-subtitle-request-sent-once-2s-timeout.patch
+        0080-hls-unselected-subtitle-playlist-closed.patch
+        0081-hls-subtitle-segment-buffer-freed.patch
+        0082-webvttdec-timestamp-map.patch
+        0083-hls-x-timestamp-map.patch
+        0084-hls-subtitles-shared-timeline.patch
+        0085-hls-webvtt-cues-repeated-across-segments.patch
+        0086-hls-cue-time-out-of-range-not-unwrapped.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

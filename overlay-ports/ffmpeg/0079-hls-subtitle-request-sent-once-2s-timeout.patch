@@ -1,0 +1,112 @@
+hls: a subtitle request is sent once and given up after 2 s without data
+
+The subtitle segments are read by the same hls_read_packet() call that
+reads the audio and video, so a subtitle server that stalls holds the
+media for the whole I/O timeout of each request and its http retries
+(0070), about 32 s with the caller's 8 s rw_timeout.
+
+Open the subtitle playlist reloads and segments with an I/O timeout of at
+most 2 s and without http's reconnects. A subtitle playlist reloads on a
+connection of its own, so the media playlist's kept-alive connection keeps
+its own timeout; a stalled subtitle request then fails within 2 s, as 0078
+handles it.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index 7762fc3..8753584 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -211,6 +211,9 @@ struct playlist {
+     int n_init_sections;
+     struct segment **init_sections;
+     int is_subtitle; /* Indicates if it's a subtitle playlist */
++    /* A subtitle playlist's own kept-alive connection for its reloads, opened
++     * with the short subtitle I/O options (set_subtitle_io_opts()). */
++    AVIOContext *playlist_pb;
+ 
+     /* Some HLS streams repeat the current timed-ID3 metadata at every segment
+      * boundary so late-joining clients get a fresh copy. Track the last seen
+@@ -358,6 +361,7 @@ static void free_playlist_list(HLSContext *c)
+         av_freep(&pls->init_sec_buf);
+         av_packet_free(&pls->pkt);
+         av_freep(&pls->pb.pub.buffer);
++        ff_format_io_close(c->ctx, &pls->playlist_pb);
+         ff_format_io_close(c->ctx, &pls->input);
+         pls->input_read_done = 0;
+         pls->input_reuse = 0;
+@@ -937,6 +941,29 @@ static int test_segment(AVFormatContext *s, const AVInputFormat *in_fmt, struct
+     return 0;
+ }
+ 
++/* A subtitle playlist is read in line with the audio and video, so a
++ * subtitle request that stalls holds them all, through every retry. Its
++ * segments and reloads are asked for once, without http's retries, and given
++ * up after SUBTITLE_IO_TIMEOUT without data (less if the input's I/O timeout
++ * is shorter): a failed segment is skipped, a failed reload tried again after
++ * a reload interval, until the subtitle playlist failed for good
++ * (read_subtitle_packet()). */
++#define SUBTITLE_IO_TIMEOUT (2 * AV_TIME_BASE)
++
++static void set_subtitle_io_opts(HLSContext *c, AVDictionary **opts)
++{
++    int64_t timeout = SUBTITLE_IO_TIMEOUT;
++    AVDictionaryEntry *e = av_dict_get(c->avio_opts, "rw_timeout", NULL, 0);
++
++    if (e) {
++        int64_t input_timeout = strtoll(e->value, NULL, 10);
++        if (input_timeout > 0 && input_timeout < timeout)
++            timeout = input_timeout;
++    }
++    av_dict_set_int(opts, "rw_timeout", timeout, 0);
++    av_dict_set_int(opts, "reconnect_max_retries", 0, 0);
++}
++
+ static int parse_playlist(HLSContext *c, const char *url,
+                           struct playlist *pls, AVIOContext *in)
+ {
+@@ -963,10 +990,15 @@ static int parse_playlist(HLSContext *c, const char *url,
+     int prev_finished = 0;
+     enum PlaylistType prev_type = PLS_TYPE_UNSPECIFIED;
+     int64_t load_start = av_gettime_relative();
+-
+-    if (is_http && !in && c->http_persistent && c->playlist_pb) {
+-        in = c->playlist_pb;
+-        ret = open_url_keepalive(c->ctx, &c->playlist_pb, url, NULL);
++    /* A live subtitle playlist's reloads (its first load is part of the
++     * input's open) keep a connection of their own: a kept-alive connection
++     * keeps the I/O timeout it was opened with. */
++    int subtitle_reload = pls && pls->is_subtitle && pls->last_load_time;
++    AVIOContext **playlist_pb = subtitle_reload ? &pls->playlist_pb : &c->playlist_pb;
++
++    if (is_http && !in && c->http_persistent && *playlist_pb) {
++        in = *playlist_pb;
++        ret = open_url_keepalive(c->ctx, playlist_pb, url, NULL);
+         if (ret == AVERROR_EXIT) {
+             return ret;
+         } else if (ret < 0) {
+@@ -986,6 +1018,8 @@ static int parse_playlist(HLSContext *c, const char *url,
+ 
+         if (c->http_persistent)
+             av_dict_set(&opts, "multiple_requests", "1", 0);
++        if (subtitle_reload)
++            set_subtitle_io_opts(c, &opts);
+ 
+         ret = open_url(c->ctx, &in, url, &opts, NULL, NULL);
+         av_dict_free(&opts);
+@@ -993,7 +1027,7 @@ static int parse_playlist(HLSContext *c, const char *url,
+             return ret;
+ 
+         if (is_http && c->http_persistent && is_native_http(in))
+-            c->playlist_pb = in;
++            *playlist_pb = in;
+         else
+             close_in = 1;
+     }
+@@ -1653,6 +1687,8 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg,
+     if (c->http_persistent)
+         av_dict_set(&opts, "multiple_requests", "1", 0);
+     av_dict_set_int(&opts, "reconnect_max_retries", reconnect ? c->reconnect_max_retries : 0, 0);
++    if (pls->is_subtitle)
++        set_subtitle_io_opts(c, &opts);
+ 
+     if (seg->size >= 0) {
+         /* Restrict the request to the wanted byte range. The end is extended

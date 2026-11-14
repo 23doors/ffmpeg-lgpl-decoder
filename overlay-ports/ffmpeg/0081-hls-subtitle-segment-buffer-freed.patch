@@ -1,0 +1,55 @@
+hls: a subtitle segment's read buffer is freed with the next one
+
+init_subtitle_context() allocates a new read buffer for each subtitle
+segment's custom AVIOContext, and avformat_close_input() does not free a
+custom pb's buffer, so every segment leaked its 32 KB: about 19 MB an
+hour on a live channel with 6 s segments. read_header() also allocated
+one for a subtitle playlist that never used it.
+
+Free the previous buffer before allocating the next one, and allocate the
+read_header() buffer only for media playlists.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index 6c24906..d58dbc4 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -2273,6 +2273,9 @@ static int init_subtitle_context(struct playlist *pls)
+     if (!(pls->ctx = avformat_alloc_context()))
+         return AVERROR(ENOMEM);
+ 
++    /* The previous segment's buffer: closing its demuxer leaves it, since the
++     * I/O context is the playlist's (AVFMT_FLAG_CUSTOM_IO). */
++    av_freep(&pls->pb.pub.buffer);
+     pls->read_buffer = av_malloc(INITIAL_BUFFER_SIZE);
+     if (!pls->read_buffer) {
+         avformat_free_context(pls->ctx);
+@@ -2835,19 +2838,20 @@ static int hls_read_header(AVFormatContext *s)
+             pls->cur_seq_no = highest_cur_seq_no;
+         }
+ 
+-        pls->read_buffer = av_malloc(INITIAL_BUFFER_SIZE);
+-        if (!pls->read_buffer){
+-            avformat_free_context(pls->ctx);
+-            pls->ctx = NULL;
+-            return AVERROR(ENOMEM);
+-        }
+-
+-        if (pls->is_subtitle)
++        if (pls->is_subtitle) {
++            /* Each segment gets a buffer of its own (init_subtitle_context()). */
+             ffio_init_context(&pls->pb, (unsigned char*)av_strdup("WEBVTT\n"), (int)strlen("WEBVTT\n"), 0, pls,
+                                        NULL, NULL, NULL);
+-        else
++        } else {
++            pls->read_buffer = av_malloc(INITIAL_BUFFER_SIZE);
++            if (!pls->read_buffer){
++                avformat_free_context(pls->ctx);
++                pls->ctx = NULL;
++                return AVERROR(ENOMEM);
++            }
+             ffio_init_context(&pls->pb, pls->read_buffer, INITIAL_BUFFER_SIZE, 0, pls,
+                                         read_data_continuous, NULL, NULL);
++        }
+ 
+         /*
+          * If encryption scheme is SAMPLE-AES, try to read  ID3 tags of
