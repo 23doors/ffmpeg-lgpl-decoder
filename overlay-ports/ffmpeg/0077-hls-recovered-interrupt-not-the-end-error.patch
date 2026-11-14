@@ -1,0 +1,27 @@
+hls: an interrupt the playlist recovered from is not its end's error
+
+A read of a playlist's segment that the caller's interrupt callback cut
+short sets the playlist AVIOContext's error to AVERROR_EXIT. Reading goes
+on afterwards (an interrupt is transient), but the error stays set: when
+the playlist then really ends, hls_read_packet() returns the buffer's error
+in place of AVERROR_EOF, so the caller sees the old interrupt instead of
+the end of the stream.
+
+Clear AVERROR_EXIT from the buffer once the read callback returns data
+again. Other errors stay as they are.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -2171,6 +2171,11 @@
+     ret = read_playlist_data(opaque, buf, buf_size);
+     if (ret < 0 && ret != AVERROR_EOF && ret != AVERROR_EXIT)
+         v->read_error = ret;
++    /* An interrupt is transient: once data comes again, the buffer no longer
++     * carries its error, or the playlist's real end would read as that
++     * interrupt (hls_read_packet() returns the buffer's error). */
++    else if (ret > 0 && v->pb.pub.error == AVERROR_EXIT)
++        v->pb.pub.error = 0;
+     return ret;
+ }
+ 

@@ -48,6 +48,7 @@ vcpkg_from_github(
         0074-hls-failed-playlist-stays-failed.patch
         0075-hls-failed-early-open-requested-once-more.patch
         0076-hls-closed-keepalive-connection-not-kept.patch
+        0077-hls-recovered-interrupt-not-the-end-error.patch
 )
 
 if(SOURCE_PATH MATCHES " ")
