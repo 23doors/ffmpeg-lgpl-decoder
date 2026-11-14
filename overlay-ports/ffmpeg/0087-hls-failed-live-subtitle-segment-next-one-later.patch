@@ -11,12 +11,10 @@ fail (0078).
 After a live playlist's segment failed, return its end for now and ask
 for the next segment a target duration later, as segments come: the
 media is held for 2 s at most once a target duration, until the playlist
-fails. A VOD playlist goes on at once, as before. The segment's read
-callback waits as well: hls_read_packet()'s avio_feof() at the end of a
-segment reads on, which would ask for the next one before it is due.
+fails. A VOD playlist goes on at once, as before.
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index 6ceb7d4..31d89be 100644
+index 7180e03..69abfac 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
 @@ -161,6 +161,10 @@ struct playlist {
@@ -30,20 +28,7 @@ index 6ceb7d4..31d89be 100644
      /* The error the playlist failed with for good, kept until a seek. */
      int read_error;
  
-@@ -2256,7 +2260,11 @@ static int read_data_subtitle_segment(void *opaque, uint8_t *buf, int buf_size)
-     int ret;
-     struct segment *seg;
- 
--    if (!v->needed || v->cur_seq_no - v->start_seq_no >= v->n_segments) {
-+    /* Not before the next segment is due after a failed one
-+     * (read_subtitle_packet()): hls_read_packet()'s avio_feof() reads on at
-+     * the end of a segment. */
-+    if (!v->needed || v->subtitle_retry_time ||
-+        v->cur_seq_no - v->start_seq_no >= v->n_segments) {
-         return AVERROR_EOF;
-     } else {
-         seg = current_segment(v);
-@@ -2277,6 +2285,7 @@ static int read_data_subtitle_segment(void *opaque, uint8_t *buf, int buf_size)
+@@ -2279,6 +2283,7 @@ static int read_data_subtitle_segment(void *opaque, uint8_t *buf, int buf_size)
                  v->segment_error_time = open_start;
              if (av_gettime_relative() - v->segment_error_time >= live_reload_timeout(v, c))
                  v->read_error = ret;
@@ -51,7 +36,7 @@ index 6ceb7d4..31d89be 100644
              return ret;
          }
          v->segment_error_time = 0;
-@@ -2473,6 +2482,11 @@ static int read_subtitle_packet(struct playlist *v, AVPacket *pkt)
+@@ -2478,6 +2483,11 @@ static int read_subtitle_packet(struct playlist *v, AVPacket *pkt)
  
      if (v->read_error < 0)
          return AVERROR_EOF;
@@ -63,7 +48,7 @@ index 6ceb7d4..31d89be 100644
  
  restart:
      ret = reload_playlist(v, c);
-@@ -2524,6 +2538,18 @@ restart:
+@@ -2531,6 +2541,18 @@ restart:
      FFSWAP(int, v->n_prev_cues, v->n_cur_cues);
      v->prev_cue_pos = 0;
  
@@ -82,8 +67,8 @@ index 6ceb7d4..31d89be 100644
      goto restart;
  }
  
-@@ -3218,6 +3244,8 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
-             pls->first_read_seq_no = -1;
+@@ -3227,6 +3249,8 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+             pls->reload_error_time = 0;
              pls->read_error = 0;
              pls->segment_error_time = 0;
 +            pls->subtitle_segment_failed = 0;
@@ -91,8 +76,8 @@ index 6ceb7d4..31d89be 100644
              pls->pb.pub.eof_reached = 0;
              pls->pb.pub.error = 0;
              if (c->cur_timestamp != AV_NOPTS_VALUE) {
-@@ -3809,6 +3837,8 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
-         pls->input_read_done = 0;
+@@ -3824,6 +3848,8 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+         pls->reload_error_time = 0;
          pls->first_read_seq_no = -1;
          pls->segment_error_time = 0;
 +        pls->subtitle_segment_failed = 0;

@@ -14,10 +14,10 @@ screen at the target is delivered instead of the next one starting after
 it.
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index fead17a..21e1366 100644
+index 9917f46..8b11860 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -3303,7 +3303,11 @@ retry:
+@@ -3317,7 +3317,11 @@ retry:
                      fill_timing_for_id3_timestamped_stream(pls);
                  }
  
@@ -30,7 +30,7 @@ index fead17a..21e1366 100644
                      (pls->ts_offset == AV_NOPTS_VALUE ||
                       (!c->first_timestamp_locked &&
                        c->first_timestamp_pls == pls &&
-@@ -3332,7 +3336,8 @@ retry:
+@@ -3346,7 +3350,8 @@ retry:
                          if (delta > 0 && delta <= pls->target_duration) {
                              c->first_timestamp = ts;
                              for (int k = 0; k < c->n_playlists; k++)
@@ -40,7 +40,7 @@ index fead17a..21e1366 100644
                                      c->playlists[k]->ts_offset += delta;
                              adjusted = 1;
                          }
-@@ -3393,6 +3398,13 @@ retry:
+@@ -3407,6 +3412,13 @@ retry:
                          pls->seek_timestamp = AV_NOPTS_VALUE;
                          break;
                      }

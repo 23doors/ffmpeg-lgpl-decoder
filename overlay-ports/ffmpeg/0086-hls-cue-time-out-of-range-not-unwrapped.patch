@@ -10,10 +10,10 @@ is, so the difference and half a period stay in range; a real MPEG-TS
 time is 33 bits.
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index cbf5d18..6ceb7d4 100644
+index 6013e2c..7180e03 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -2413,11 +2413,16 @@ static int64_t media_position(HLSContext *c)
+@@ -2418,11 +2418,16 @@ static int64_t media_position(HLSContext *c)
  }
  
  /* The MPEG-TS time of a cue is on the 33 bit PES clock, this is the period

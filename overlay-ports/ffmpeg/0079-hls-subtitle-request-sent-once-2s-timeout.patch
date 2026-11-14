@@ -12,7 +12,7 @@ its own timeout; a stalled subtitle request then fails within 2 s, as 0078
 handles it.
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index 7762fc3..8753584 100644
+index b434d61..85b8ca1 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
 @@ -211,6 +211,9 @@ struct playlist {

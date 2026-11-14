@@ -5,7 +5,13 @@ upstream; the tests it adds are left out.
 
 Set the timestamp_map option of the webvtt demuxer for the subtitle
 segments in place of prefer_hls_mpegts_pts, which no demuxer has, so the
-cue times land on the MPEG-TS timeline of the audio and video. That time
+cue times land on the MPEG-TS timeline of the audio and video. Unlike
+upstream, which sets it in seg_format_opts for every playlist, set it for
+the subtitle renditions only (is_subtitle): a WebVTT media playlist
+opened on its own, as a player loads a VOD master's subtitles as a
+sidecar, keeps its cue times, which with a map such as
+MPEGTS:900000,LOCAL:0 are the media's positions; mapped, they moved by
+the map's offset. That time
 is on the 33 bit PES clock, so each cue is put on the period of that clock
 nearest to the position of the media, which is read first when both are
 enabled. A cue read without any media does not become that position, and
@@ -27,7 +33,7 @@ index d669f45..81820d2 100644
  
  @table @option
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index d58dbc4..fead17a 100644
+index e17adfa..9917f46 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
 @@ -123,6 +123,7 @@ struct playlist {
@@ -46,7 +52,17 @@ index d58dbc4..fead17a 100644
      pls->seek_timestamp = AV_NOPTS_VALUE;
      pls->first_read_seq_no = -1;
      pls->anchor_ts = AV_NOPTS_VALUE;
-@@ -2319,6 +2321,60 @@ static int subtitle_playlist_failed(struct playlist *v, int ret)
+@@ -2297,6 +2299,9 @@ static int init_subtitle_context(struct playlist *pls)
+ 
+     in_fmt = av_find_input_format("webvtt");
+     av_dict_copy(&opts, c->seg_format_opts, 0);
++    /* Only a subtitle rendition's segments: a WebVTT media playlist opened on
++     * its own keeps its cue times, as other players read it. */
++    av_dict_set(&opts, "timestamp_map", "1", 0);
+     ret = avformat_open_input(&pls->ctx, current_segment(pls)->url, in_fmt, &opts);
+     av_dict_free(&opts);
+ 
+@@ -2321,6 +2326,60 @@ static int subtitle_playlist_failed(struct playlist *v, int ret)
      return AVERROR_EOF;
  }
  
@@ -107,7 +123,7 @@ index d58dbc4..fead17a 100644
  static int read_subtitle_packet(struct playlist *v, AVPacket *pkt)
  {
      HLSContext *c = v->parent->priv_data;
-@@ -2343,7 +2399,8 @@ restart:
+@@ -2345,7 +2404,8 @@ restart:
  
      ret = av_read_frame(v->ctx, v->pkt);
      if (!ret) {
@@ -117,16 +133,26 @@ index d58dbc4..fead17a 100644
      }
      if (ret == AVERROR_EXIT)
          return ret;
-@@ -2806,7 +2863,7 @@ static int hls_read_header(AVFormatContext *s)
+@@ -2810,8 +2870,6 @@ static int hls_read_header(AVFormatContext *s)
          highest_cur_seq_no = FFMAX(highest_cur_seq_no, pls->cur_seq_no);
      }
  
 -    av_dict_set(&c->seg_format_opts, "prefer_hls_mpegts_pts", "1", 0);
-+    av_dict_set(&c->seg_format_opts, "timestamp_map", "1", 0);
- 
+-
      /* Open the demuxer for each playlist */
      for (i = 0; i < c->n_playlists; i++) {
-@@ -3043,6 +3100,7 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+         struct playlist *pls = c->playlists[i];
+@@ -2956,6 +3014,9 @@ static int hls_read_header(AVFormatContext *s)
+             return ret;
+ 
+         av_dict_copy(&options, c->seg_format_opts, 0);
++        /* As init_subtitle_context(): the stream gets the map's time base. */
++        if (pls->is_subtitle)
++            av_dict_set(&options, "timestamp_map", "1", 0);
+ 
+         ret = avformat_open_input(&pls->ctx, pls->segments[0]->url, in_fmt, &options);
+         av_dict_free(&options);
+@@ -3047,6 +3108,7 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
                  pls->input_read_done = 0;
                  pls->input_reuse = 0;
                  avformat_close_input(&pls->ctx);
@@ -134,7 +160,7 @@ index d58dbc4..fead17a 100644
              }
              pls->cur_seq_no = select_cur_seq_no(c, pls);
              pls->first_read_seq_no = -1;
-@@ -3072,6 +3130,7 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+@@ -3077,6 +3139,7 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
                  avformat_close_input(&pls->ctx);
                  ff_format_io_close(pls->parent, &pls->playlist_pb);
                  av_packet_unref(pls->pkt);
@@ -142,7 +168,7 @@ index d58dbc4..fead17a 100644
              }
              pls->needed = 0;
              changed = 1;
-@@ -3199,16 +3258,24 @@ static void update_live_window(HLSContext *c)
+@@ -3204,16 +3267,24 @@ static void update_live_window(HLSContext *c)
  static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
  {
      HLSContext *c = s->priv_data;
@@ -168,7 +194,7 @@ index d58dbc4..fead17a 100644
              while (1) {
                  int64_t ts_diff;
                  AVRational tb;
-@@ -3330,6 +3397,14 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -3340,6 +3411,14 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
                  av_packet_unref(pls->pkt);
              }
          }
@@ -183,7 +209,7 @@ index d58dbc4..fead17a 100644
          /* Check if this stream has the packet with the lowest dts */
          if (pls->pkt->data) {
              struct playlist *minpls = minplaylist < 0 ?
-@@ -3347,6 +3422,13 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -3357,6 +3436,13 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
          }
      }
  
@@ -197,7 +223,7 @@ index d58dbc4..fead17a 100644
      /* If we got a packet, return it */
      if (minplaylist >= 0) {
          struct playlist *pls = c->playlists[minplaylist];
-@@ -3407,7 +3489,9 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -3417,7 +3503,9 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
          av_packet_move_ref(pkt, pls->pkt);
          pkt->stream_index = st->index;
  
@@ -208,7 +234,7 @@ index d58dbc4..fead17a 100644
              c->cur_timestamp = av_rescale_q(pkt->dts,
                                              ist->time_base,
                                              AV_TIME_BASE_Q);
-@@ -3619,8 +3703,10 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -3630,8 +3718,10 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
              for (j = 0; j < (int)pls->ctx->nb_streams; j++)
                  ffstream(pls->ctx->streams[j])->pts_wrap_reference = AV_NOPTS_VALUE;
          }

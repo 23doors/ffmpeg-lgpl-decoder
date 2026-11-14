@@ -59,6 +59,7 @@ vcpkg_from_github(
         0085-hls-webvtt-cues-repeated-across-segments.patch
         0086-hls-cue-time-out-of-range-not-unwrapped.patch
         0087-hls-failed-live-subtitle-segment-next-one-later.patch
+        0088-hls-subtitle-playlist-counts-reloads-not-reads.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

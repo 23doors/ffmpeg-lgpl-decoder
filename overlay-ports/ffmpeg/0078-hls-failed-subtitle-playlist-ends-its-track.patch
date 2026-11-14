@@ -11,13 +11,36 @@ WebVTT context are closed, and the playlist reads as EOF from then on, so
 the other renditions play on. Its segments fail as a live media
 playlist's do (0072): one failure is skipped, and segments that keep
 failing for live_reload_timeout() end it. A seek or a re-enable of the
-stream starts it again (0074).
+stream starts it again (0074), with the reload tolerance counted afresh
+(reload_error_time was left from the failure, so one more transient
+reload error failed it at once; media playlists too).
+
+Only read_subtitle_packet() reads a subtitle playlist's I/O context, and
+its read callback opens nothing once the playlist failed: at an EOF
+hls_read_packet() asked avio_feof(), which reads on and so opened the
+next segment, or the failed playlist's current one, past these checks,
+once for each packet of the media.
+
+The subtitle reader no longer sets c->cur_seq_no, the media's segment
+where a playlist enabled during playback starts: it reads its segment to
+the end ahead of the media, so a stream enabled then started a segment
+late and missed the cue on screen.
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index 4e3ecda..7762fc3 100644
+index 4e3ecda..b434d61 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -2193,14 +2193,23 @@ static int read_data_subtitle_segment(void *opaque, uint8_t *buf, int buf_size)
+@@ -2186,21 +2186,32 @@ static int read_data_subtitle_segment(void *opaque, uint8_t *buf, int buf_size)
+     int ret;
+     struct segment *seg;
+ 
+-    if (!v->needed || v->cur_seq_no - v->start_seq_no >= v->n_segments) {
++    /* A failed playlist opens nothing more (subtitle_playlist_failed()). */
++    if (!v->needed || v->read_error < 0 ||
++        v->cur_seq_no - v->start_seq_no >= v->n_segments) {
+         return AVERROR_EOF;
+     } else {
+         seg = current_segment(v);
      }
  
      if (!v->input) {
@@ -41,7 +64,7 @@ index 4e3ecda..7762fc3 100644
          if (v->first_read_seq_no < 0)
              v->first_read_seq_no = v->cur_seq_no;
      }
-@@ -2253,15 +2262,36 @@ static int init_subtitle_context(struct playlist *pls)
+@@ -2253,15 +2264,36 @@ static int init_subtitle_context(struct playlist *pls)
      return ret;
  }
  
@@ -79,7 +102,7 @@ index 4e3ecda..7762fc3 100644
  
      if (v->input && !v->ctx)
          ff_format_io_close(v->parent, &v->input);
-@@ -2269,13 +2299,17 @@ restart:
+@@ -2269,16 +2301,22 @@ restart:
      if (!v->input && !v->ctx) {
          ret = init_subtitle_context(v);
          if (ret < 0)
@@ -97,16 +120,34 @@ index 4e3ecda..7762fc3 100644
 +        return subtitle_playlist_failed(v, v->read_error);
      ff_format_io_close(v->parent, &v->input);
      v->cur_seq_no++;
-     c->cur_seq_no = v->cur_seq_no;
-@@ -2965,6 +2999,7 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+-    c->cur_seq_no = v->cur_seq_no;
++    /* Not c->cur_seq_no: that is the media's segment, where a playlist
++     * selected again starts, and the subtitle reader may be a segment ahead
++     * of it or numbered apart. */
+ 
+     avformat_close_input(&v->ctx);
+ 
+@@ -2964,7 +3002,9 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+             changed = 1;
              pls->cur_seq_no = select_cur_seq_no(c, pls);
              pls->first_read_seq_no = -1;
++            pls->reload_error_time = 0;
              pls->read_error = 0;
 +            pls->segment_error_time = 0;
              pls->pb.pub.eof_reached = 0;
              pls->pb.pub.error = 0;
              if (c->cur_timestamp != AV_NOPTS_VALUE) {
-@@ -3133,9 +3168,9 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -3129,13 +3169,18 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+                 else
+                     ret = av_read_frame(pls->ctx, pls->pkt);
+                 if (ret < 0) {
+-                    if (!avio_feof(&pls->pb.pub) && ret != AVERROR_EOF)
++                    /* Only read_subtitle_packet() reads a subtitle playlist's
++                     * I/O context: avio_feof() reads on at its end, which
++                     * would open the next segment, or the failed playlist's,
++                     * past its checks. */
++                    if (ret != AVERROR_EOF &&
++                        (pls->is_subtitle || !avio_feof(&pls->pb.pub)))
                          return ret;
                      /* The playlist could not be read on (a live reload that
                       * kept failing): that is an error, not its end. A subtitle
@@ -119,3 +160,11 @@ index 4e3ecda..7762fc3 100644
                      if (!pls->is_subtitle && pls->pb.pub.error < 0)
                          return pls->pb.pub.error;
                      break;
+@@ -3510,6 +3555,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+         AVIOContext *const pb = &pls->pb.pub;
+         ff_format_io_close(pls->parent, &pls->input);
+         pls->input_read_done = 0;
++        pls->reload_error_time = 0;
+         pls->first_read_seq_no = -1;
+         pls->segment_error_time = 0;
+         pls->read_error = 0;

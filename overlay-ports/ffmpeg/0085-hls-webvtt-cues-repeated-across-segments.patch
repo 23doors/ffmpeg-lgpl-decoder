@@ -14,7 +14,7 @@ number (RFC 8216, 4.3.3.3), which also covers a boundary that already left
 a live playlist.
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index 21e1366..cbf5d18 100644
+index 8b11860..6013e2c 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
 @@ -82,6 +82,7 @@ struct segment {
@@ -98,7 +98,7 @@ index 21e1366..cbf5d18 100644
                  dynarray_add(&pls->segments, &pls->n_segments, seg);
                  is_segment = 0;
  
-@@ -2321,6 +2353,46 @@ static int subtitle_playlist_failed(struct playlist *v, int ret)
+@@ -2326,6 +2358,46 @@ static int subtitle_playlist_failed(struct playlist *v, int ret)
      return AVERROR_EOF;
  }
  
@@ -145,7 +145,7 @@ index 21e1366..cbf5d18 100644
  static AVRational get_timebase(struct playlist *pls);
  
  /* The position of the media, the reference for the cue times: the last
-@@ -2362,22 +2434,36 @@ static void unwrap_pkt(AVPacket *pkt, AVRational tb, int64_t ref)
+@@ -2367,22 +2439,36 @@ static void unwrap_pkt(AVPacket *pkt, AVRational tb, int64_t ref)
  
  /* Put a cue on the period nearest to the media position, where the
   * timestamps of the other renditions continue after a wrap. Without media
@@ -187,7 +187,7 @@ index 21e1366..cbf5d18 100644
      int ret;
  
      if (v->read_error < 0)
-@@ -2392,15 +2478,31 @@ restart:
+@@ -2397,15 +2483,31 @@ restart:
          ff_format_io_close(v->parent, &v->input);
  
      if (!v->input && !v->ctx) {
@@ -222,7 +222,7 @@ index 21e1366..cbf5d18 100644
      }
      if (ret == AVERROR_EXIT)
          return ret;
-@@ -2412,6 +2514,11 @@ restart:
+@@ -2419,6 +2521,11 @@ restart:
  
      avformat_close_input(&v->ctx);
  
@@ -234,7 +234,7 @@ index 21e1366..cbf5d18 100644
      goto restart;
  }
  
-@@ -3100,7 +3207,7 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+@@ -3108,7 +3215,7 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
                  pls->input_read_done = 0;
                  pls->input_reuse = 0;
                  avformat_close_input(&pls->ctx);
@@ -243,7 +243,7 @@ index 21e1366..cbf5d18 100644
              }
              pls->cur_seq_no = select_cur_seq_no(c, pls);
              pls->first_read_seq_no = -1;
-@@ -3130,7 +3237,7 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+@@ -3139,7 +3246,7 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
                  avformat_close_input(&pls->ctx);
                  ff_format_io_close(pls->parent, &pls->playlist_pb);
                  av_packet_unref(pls->pkt);
@@ -252,7 +252,7 @@ index 21e1366..cbf5d18 100644
              }
              pls->needed = 0;
              changed = 1;
-@@ -3717,7 +3824,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -3732,7 +3839,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
          }
          if (pls->is_subtitle) {
              avformat_close_input(&pls->ctx);

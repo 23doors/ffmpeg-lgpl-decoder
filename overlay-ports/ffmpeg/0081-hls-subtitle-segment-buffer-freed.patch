@@ -10,10 +10,10 @@ Free the previous buffer before allocating the next one, and allocate the
 read_header() buffer only for media playlists.
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index 6c24906..d58dbc4 100644
+index 1ab0e16..e17adfa 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -2273,6 +2273,9 @@ static int init_subtitle_context(struct playlist *pls)
+@@ -2275,6 +2275,9 @@ static int init_subtitle_context(struct playlist *pls)
      if (!(pls->ctx = avformat_alloc_context()))
          return AVERROR(ENOMEM);
  
@@ -23,7 +23,7 @@ index 6c24906..d58dbc4 100644
      pls->read_buffer = av_malloc(INITIAL_BUFFER_SIZE);
      if (!pls->read_buffer) {
          avformat_free_context(pls->ctx);
-@@ -2835,19 +2838,20 @@ static int hls_read_header(AVFormatContext *s)
+@@ -2839,19 +2842,20 @@ static int hls_read_header(AVFormatContext *s)
              pls->cur_seq_no = highest_cur_seq_no;
          }
  

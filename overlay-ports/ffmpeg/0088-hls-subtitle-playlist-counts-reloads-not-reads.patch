@@ -1,0 +1,63 @@
+hls: a subtitle playlist counts its reloads without a new segment, not its reads
+
+read_subtitle_packet() calls reload_playlist() on each read of the media
+while the subtitle playlist waits for its next segment, and each call
+counted as a reload without a new segment: m3u8_hold_counters such reads
+(1000 by default, fewer when set) ended the subtitle track for good, as
+reload_playlist() returns EOF before it looks at the segments again. A
+subtitle playlist that lists each segment a little after the media's, or
+one waiting at the live edge, ended within a segment or two. A seek or a
+re-enable also left the count, and set last_seq_no to the playlist's
+segment, so a count near the limit ended the track at the next read.
+
+Count only a subtitle playlist's reloads, and start the count afresh on a
+seek and when a playlist is enabled again.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index 69abfac..291c88d 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -1947,6 +1947,7 @@ static int reload_playlist(struct playlist *v, HLSContext *c)
+ {
+     int ret = 0;
+     int reload_count = 0;
++    int reloaded = 0;
+ 
+     v->needed = playlist_needed(v);
+ 
+@@ -1978,6 +1979,7 @@ reload:
+             av_gettime_relative() - v->last_load_time >= reload_interval) {
+             int64_t load_start = av_gettime_relative();
+ 
++            reloaded = 1;
+             if ((ret = parse_playlist(c, v->url, v, NULL)) < 0) {
+                 if (ret == AVERROR_EXIT)
+                     return ret;
+@@ -2014,7 +2016,10 @@ reload:
+         if (v->cur_seq_no > v->last_seq_no) {
+             v->last_seq_no = v->cur_seq_no;
+             v->m3u8_hold_counters = 0;
+-        } else if (v->last_seq_no == v->cur_seq_no) {
++        } else if (v->last_seq_no == v->cur_seq_no &&
++                   (reloaded || !v->is_subtitle)) {
++            /* A subtitle playlist is asked on each read of the media while it
++             * waits for its next segment: only its reloads count. */
+             v->m3u8_hold_counters++;
+             if (v->m3u8_hold_counters >= c->m3u8_hold_counters) {
+                 return AVERROR_EOF;
+@@ -3247,6 +3252,7 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+             pls->cur_seq_no = select_cur_seq_no(c, pls);
+             pls->first_read_seq_no = -1;
+             pls->reload_error_time = 0;
++            pls->m3u8_hold_counters = 0;
+             pls->read_error = 0;
+             pls->segment_error_time = 0;
+             pls->subtitle_segment_failed = 0;
+@@ -3846,6 +3852,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+         ff_format_io_close(pls->parent, &pls->input);
+         pls->input_read_done = 0;
+         pls->reload_error_time = 0;
++        pls->m3u8_hold_counters = 0;
+         pls->first_read_seq_no = -1;
+         pls->segment_error_time = 0;
+         pls->subtitle_segment_failed = 0;
