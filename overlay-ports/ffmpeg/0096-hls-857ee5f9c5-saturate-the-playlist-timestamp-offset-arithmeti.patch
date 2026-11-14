@@ -1,0 +1,84 @@
+From 857ee5f9c5e55689f480a2dca089fece89f029f7 Mon Sep 17 00:00:00 2001
+From: Michael Niedermayer <michael@niedermayer.cc>
+Date: Mon, 12 Oct 2026 02:11:45 +0200
+Subject: [PATCH] avformat/hls: saturate the playlist timestamp offset
+ arithmetic
+
+Fixes: signed integer overflow
+Fixes: 2PuIAHF3wU0b
+Regression since: e27ad5760c
+Found during triage of the review of https://code.ffmpeg.org/FFmpeg/FFmpeg/pulls/24873
+Signed integer overflow Replicated through UnModified FFmpeg with UBSAN
+
+Pack note: The context is the pack's (0063-0068, 0084); the changed lines are
+upstream's.
+---
+ libavformat/hls.c | 16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index 700aba6..433257c 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -3269,8 +3269,8 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+             pls->pb.pub.error = 0;
+             if (c->cur_timestamp != AV_NOPTS_VALUE) {
+                 /* catch up */
+-                pls->seek_timestamp = c->cur_timestamp +
+-                    (pls->ts_offset != AV_NOPTS_VALUE ? pls->ts_offset : 0);
++                pls->seek_timestamp = av_sat_add64(c->cur_timestamp,
++                    pls->ts_offset != AV_NOPTS_VALUE ? pls->ts_offset : 0);
+                 pls->seek_flags = AVSEEK_FLAG_ANY;
+                 pls->seek_stream_index = -1;
+             }
+@@ -3484,7 +3484,7 @@ retry:
+                                               get_timebase(pls), AV_TIME_BASE_Q);
+ 
+                     for (int64_t k = 0; k < seg_idx && k < pls->n_segments; k++)
+-                        ts -= pls->segments[k]->duration;
++                        ts = av_sat_sub64(ts, pls->segments[k]->duration);
+ 
+                     if (c->first_timestamp == AV_NOPTS_VALUE) {
+                         c->first_timestamp = ts;
+@@ -3495,20 +3495,20 @@ retry:
+                          * order, but another stream in the same segment may
+                          * start earlier. Lower the estimate while packets of
+                          * that segment are still arriving. */
+-                        int64_t delta = c->first_timestamp - ts;
++                        int64_t delta = av_sat_sub64(c->first_timestamp, ts);
+ 
+                         if (delta > 0 && delta <= pls->target_duration) {
+                             c->first_timestamp = ts;
+                             for (int k = 0; k < c->n_playlists; k++)
+                                 if (c->playlists[k]->ts_offset != AV_NOPTS_VALUE &&
+                                     !c->playlists[k]->is_subtitle)
+-                                    c->playlists[k]->ts_offset += delta;
++                                    c->playlists[k]->ts_offset = av_sat_add64(c->playlists[k]->ts_offset, delta);
+                             adjusted = 1;
+                         }
+                     }
+ 
+                     if (pls->ts_offset == AV_NOPTS_VALUE)
+-                        pls->ts_offset = ts - c->first_timestamp;
++                        pls->ts_offset = av_sat_sub64(ts, c->first_timestamp);
+ 
+                     if (adjusted) {
+                         for (unsigned k = 0; k < s->nb_streams; k++)
+@@ -3899,7 +3899,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+         if (tune || !pls->finished)
+             pls->seek_timestamp = AV_NOPTS_VALUE;
+         else if (pls->ts_offset != AV_NOPTS_VALUE)
+-            pls->seek_timestamp = seek_timestamp + pls->ts_offset;
++            pls->seek_timestamp = av_sat_add64(seek_timestamp, pls->ts_offset);
+         else
+             pls->seek_timestamp = seek_timestamp;
+         pls->seek_flags = flags;
+@@ -3928,7 +3928,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+              * to not discard the keyframe and land one segment late. */
+             int64_t idx = seq_no - pls->start_seq_no;
+             if (idx >= 0 && idx < pls->n_segments)
+-                pls->seek_timestamp -= pls->segments[idx]->duration;
++                pls->seek_timestamp = av_sat_sub64(pls->seek_timestamp, pls->segments[idx]->duration);
+         }
+ 
+         if (pls != seek_pls) {

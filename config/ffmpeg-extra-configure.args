@@ -157,6 +157,7 @@
 --enable-decoder=ssa
 --enable-decoder=movtext
 --enable-decoder=webvtt
+--enable-decoder=ccaption
 --enable-decoder=pgssub
 --enable-decoder=dvbsub
 --enable-decoder=dvdsub

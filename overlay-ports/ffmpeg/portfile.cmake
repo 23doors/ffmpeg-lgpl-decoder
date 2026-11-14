@@ -60,6 +60,15 @@ vcpkg_from_github(
         0086-hls-cue-time-out-of-range-not-unwrapped.patch
         0087-hls-failed-live-subtitle-segment-next-one-later.patch
         0088-hls-subtitle-playlist-counts-reloads-not-reads.patch
+        0089-hls-6053155d19-use-the-playlist-of-the-new-variant-in-ensure-pl.patch
+        0090-hls-051b8db722-free-the-subtitle-context-if-copying-the-whiteli.patch
+        0091-hls-f88f1041a6-advance-the-init-section-read-pointer.patch
+        0092-hls-531a0c4908-attach-id3-pictures-only-for-packed-audio-segmen.patch
+        0093-hls-2e47b816c8-free-the-id3-data-of-later-segments.patch
+        0094-hls-3f322521c0-saturate-the-timestamps-of-id3-timestamped-strea.patch
+        0095-hls-055cc2024d-fix-variant-bitrate-on-streams-shared-by-multipl.patch
+        0096-hls-857ee5f9c5-saturate-the-playlist-timestamp-offset-arithmeti.patch
+        0097-hls-d9242028a6-fix-reading-byte-range-segments-after-the-first.patch
 )
 
 if(SOURCE_PATH MATCHES " ")
