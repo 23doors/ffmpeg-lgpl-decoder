@@ -11,7 +11,9 @@ re-enable also left the count, and set last_seq_no to the playlist's
 segment, so a count near the limit ended the track at the next read.
 
 Count only a subtitle playlist's reloads, and start the count afresh on a
-seek and when a playlist is enabled again.
+seek and when a playlist is enabled again. That restart applies to media
+playlists too, which upstream never resets: after a seek during a stall
+the full count runs again.
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
 index 69abfac..291c88d 100644

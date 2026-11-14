@@ -19,7 +19,9 @@ Only read_subtitle_packet() reads a subtitle playlist's I/O context, and
 its read callback opens nothing once the playlist failed: at an EOF
 hls_read_packet() asked avio_feof(), which reads on and so opened the
 next segment, or the failed playlist's current one, past these checks,
-once for each packet of the media.
+once for each packet of the media. A media playlist's EOF no longer gets
+that one refill either: it was one more reload_playlist() call, a network
+reload with the hold counter already at its limit, after the input ended.
 
 The subtitle reader no longer sets c->cur_seq_no, the media's segment
 where a playlist enabled during playback starts: it reads its segment to
