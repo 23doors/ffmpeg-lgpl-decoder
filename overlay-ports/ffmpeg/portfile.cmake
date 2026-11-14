@@ -47,6 +47,7 @@ vcpkg_from_github(
         0073-hls-export-window-at-eof.patch
         0074-hls-failed-playlist-stays-failed.patch
         0075-hls-failed-early-open-requested-once-more.patch
+        0076-hls-closed-keepalive-connection-not-kept.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

@@ -1,0 +1,34 @@
+hls: a kept-alive connection that a failed request closed is not kept
+
+A segment read to its end on a kept-alive connection leaves the playlist
+with input_read_done set, and the next segment is requested on that
+connection. When the request fails, open_url_keepalive() closes the
+connection; on AVERROR_EXIT (the caller's interrupt callback, as when a
+player closes during the request) read_playlist_data() returns at once and
+input_read_done stays set with no input. The next call of the read
+callback, which comes right away (avio_feof() refills the buffer once its
+EOF flag is set: hls_read_packet() and the nested demuxers call it after a
+failed read), hit av_assert0(v->input) and aborted the process. Reloads
+that fail on an interrupt while the next segment is waited for leave the
+same state after a segment was skipped.
+
+Treat a playlist without input as having no kept connection: the next
+segment is opened anew, as after a seek.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -1987,6 +1987,13 @@ static int read_playlist_data(void *opaque, uint8_t *buf, int buf_size)
+     int segment_retries = 0;
+     struct segment *seg;
+ 
++    /* A request that failed after the last segment was read to its end on
++     * the kept-alive connection closed that connection (an interrupted
++     * keep-alive request does, then returns AVERROR_EXIT): nothing is kept
++     * any more, and the next segment is opened anew. */
++    if (!v->input)
++        v->input_read_done = 0;
++
+     if (c->http_persistent && v->input_read_done) {
+         av_assert0(v->input);
+         ret = reload_playlist(v, c);
