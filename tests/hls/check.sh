@@ -601,7 +601,7 @@ check_http_reply() { # 0137-0150: seeks, ends and ranged replies (June and Octob
     # error (ENOSYS: Windows' tcp, tls over a proxy's tunnel; here https
     # through this server as the proxy) is no soft seek: one compared the
     # error as unsigned, so any seek drained the whole rest of the reply first
-    runh short-seek-ref "" /range/file.ts -direct s:50000 r:1000
+    runh short-seek-ref "" /range/file.ts -direct r:50000 r:1000
     a=$((PORT + 1))
     URL=https://localhost:$a/range/file.ts
     runh short-seek "--tls" - -direct -debug -o http_proxy=http://127.0.0.1:$a \
@@ -609,7 +609,7 @@ check_http_reply() { # 0137-0150: seeks, ends and ranged replies (June and Octob
     URL=
     tunnels=$(grep -c 'CONNECT ' "$OUT/short-seek.server.log")
     ! grep -q 'Soft-seeking' "$OUT/short-seek.log" && [ "$tunnels" = 2 ] &&
-        [ "$(readcrc short-seek 2)" = "$(readcrc short-seek-ref 1)" ]
+        [ "$(readcrc short-seek 2)" = "$(readcrc short-seek-ref 2)" ]
     ok=$?
     result short-seek "https through a proxy, a seek on: no drain, a new tunnel ($tunnels; $(grep -o 'draining [0-9]* ' "$OUT/short-seek.log"))" $ok
     # a seek back inside a reply on a connection the server closes after it:
@@ -634,8 +634,9 @@ check_http_reply() { # 0137-0150: seeks, ends and ranged replies (June and Octob
     ok=$?
     result seek-Close "\"Connection: Close\" in the reply: a seek back is no soft seek ($(hread seek-Close 2))" $ok
     # 0138 (62006041cc): a read with no connection before the end is an
-    # error, not the end (the seek's new request failed, 503)
-    runh io-not-eof "" "/range/file.ts?fail=1" -direct -o multiple_requests=1 r:140000 s:1000 r:100
+    # error, not the end (a soft seek found the connection closed and the
+    # new one's request failed, 503: no connection is left)
+    runh io-not-eof "" "/range/file.ts?close=1&fail=1" -direct -o multiple_requests=1 r:140000 s:1000 r:100
     hread io-not-eof 2 | grep -q 'got 0 .* end=Input/output error'
     ok=$?
     result io-not-eof "after a failed seek, a read is EIO, not EOF ($(hread io-not-eof 2))" $ok
