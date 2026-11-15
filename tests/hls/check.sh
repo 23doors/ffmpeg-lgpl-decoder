@@ -608,6 +608,8 @@ check_http_reply() { # 0141-0154: seeks, ends and ranged replies (June and Octob
     runh rr-ref "" /range/file.ts -direct r:1000 r:1000
     runh rr-full "" /range/file.ts -direct ra
     at1000=$(readcrc rr-ref 2); full=$(readcrc rr-full 1)
+    # the file's size (the fixture media's: the system ffmpeg's muxer decides)
+    size=$(hread rr-full 1 | sed 's/.* got \([0-9]*\) .*/\1/')
     # 0141 (557ab6f2ab): a seek when the connection's short seek size is an
     # error (ENOSYS: Windows' tcp, tls over a proxy's tunnel; here https
     # through this server as the proxy) is no soft seek: one compared the
@@ -654,7 +656,7 @@ check_http_reply() { # 0141-0154: seeks, ends and ranged replies (June and Octob
     # 0147 (17afe2331a): a seek past the end drops the old reply (its
     # buffered bytes, which came with the headers, were read at the new
     # offset)
-    runh past-end "" "/range/file.ts?onewrite=1" -direct r:1000 s:151600 r:100
+    runh past-end "" "/range/file.ts?onewrite=1" -direct r:1000 s:$((size + 72)) r:100
     hread past-end 2 | grep -q 'got 0 .* end=eof'
     ok=$?
     result past-end "a read after a seek past the end gets nothing ($(hread past-end 2))" $ok
@@ -667,7 +669,7 @@ check_http_reply() { # 0141-0154: seeks, ends and ranged replies (June and Octob
     # past it (a request for the bytes past the end got 416, the read's end)
     runh end-past-file "" /range/file.ts -direct -o multiple_requests=1 -o end_offset=200000 ra
     req=$(grep -c 'GET /range/' "$OUT/end-past-file.server.log")
-    hread end-past-file 1 | grep -q 'got 151528 .* end=eof' && [ "$req" = 1 ]
+    hread end-past-file 1 | grep -q "got $size .* end=eof" && [ "$req" = 1 ]
     ok=$?
     result end-past-file "end_offset past the end: the file, EOF, one request ($req; $(hread end-past-file 1))" $ok
     # 0149 (ca5300c9f4): a chunked partial reply (request_size) is continued
