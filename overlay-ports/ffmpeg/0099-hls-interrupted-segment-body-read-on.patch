@@ -16,10 +16,52 @@ its offset on the next read. The input's EOF flag and error, which
 avio_read() set, are cleared, so the next call of the read callback reads
 on from the same place. A seek closes the input as before.
 
+Whether the segment's first data is still to come is kept with the
+playlist (first_read_pending, was a local of the read callback): an
+interrupt in a segment's first read no longer loses it, so the ID3 tags
+of an ID3-timestamped segment (packed audio) are still taken out of its
+first data, and its timestamp kept.
+
+What it covers: an unencrypted segment's body over http, with a
+Content-Length or chunked (0106 keeps a chunk-size line an interrupt
+cuts), and an AES-128 one's (0105: crypto took the interrupt for the
+end). The subdemuxer decides what it makes of the interrupted read: mpegts
+reads on with no loss; mov drops the sample it was reading (it moved past
+the sample before reading it, and the playlist's buffer cannot seek back),
+at most one per interrupt.
+
 diff --git a/libavformat/hls.c b/libavformat/hls.c
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -2224,6 +2224,15 @@ restart:
+@@ -173,6 +173,10 @@ struct playlist {
+     /* A segment of the playlist was read to its end, and no data of the next
+      * one, which follows it in the playlist's byte stream, was read yet. */
+     int segment_boundary;
++    /* The segment's input was opened and none of its data read yet: kept
++     * across an interrupted first read, so that the segment's ID3 tags are
++     * still taken out of its first data. */
++    int first_read_pending;
+ 
+     /* Currently active Media Initialization Section */
+     struct segment *cur_init_section;
+@@ -2063,7 +2067,6 @@ static int read_playlist_data(void *opaque, uint8_t *buf, int buf_size)
+     struct playlist *v = opaque;
+     HLSContext *c = v->parent->priv_data;
+     int ret;
+-    int just_opened = 0;
+     int segment_retries = 0;
+     int vtt_gap;
+     struct segment *seg;
+@@ -2156,7 +2159,7 @@ restart:
+         }
+         segment_retries = 0;
+         v->segment_error_time = 0;
+-        just_opened = 1;
++        v->first_read_pending = 1;
+         v->input_read_done = 0;
+         v->anchor_pending_seq_no = v->cur_seq_no;
+         if (v->first_read_seq_no < 0)
+@@ -2224,12 +2227,22 @@ restart:
              memmove(buf, buf + vtt_gap, ret);
          }
      }
@@ -33,5 +75,22 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
 +        return ret;
 +    }
      if (ret > 0) {
-         if (just_opened && v->is_id3_timestamped != 0) {
+-        if (just_opened && v->is_id3_timestamped != 0) {
++        if (v->first_read_pending && v->is_id3_timestamped != 0) {
              /* Intercept ID3 tags here, elementary audio streams are required
+              * to convey timestamps using them in the beginning of each segment. */
+             intercept_id3(v, buf, buf_size, &ret);
+         }
++        v->first_read_pending = 0;
+ 
+         return ret;
+     }
+@@ -2240,7 +2253,7 @@ restart:
+         v->cur_seq_no++;
+         c->cur_seq_no = v->cur_seq_no;
+         v->cur_seg_offset = 0;
+-        just_opened = 1;
++        v->first_read_pending = 1;
+         /* It anchors the live window as an opened segment does. */
+         v->anchor_pending_seq_no = v->cur_seq_no;
+         goto restart;
