@@ -1,0 +1,56 @@
+hls: a keyed init section without an IV is kept across live reloads
+
+0103 keeps the init section a live reload lists again when it names the
+same bytes, comparing address, range, key and IV. An EXT-X-MAP under an
+EXT-X-KEY without an IV gets its IV from the media sequence number at
+the MAP line, which moves with each reload of a live window, so the
+section never matched one listed before: it was fetched and given to the
+demuxer again on every reload ("Found duplicated MOOV Atom"), as before
+0103.
+
+Remember whether the IV was given, and compare IVs only when both were:
+a derived IV of the same address, range and key is the same section.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -84,6 +84,9 @@ struct segment {
+     char *key;
+     enum KeyType key_type;
+     uint8_t iv[16];
++    /* An init section's IV came from its EXT-X-KEY (else from the media
++     * sequence number at its EXT-X-MAP line) */
++    int iv_given;
+     uint64_t discontinuity_seq;
+     /* associated Media Initialization Section, treated as a segment */
+     struct segment *init_section;
+@@ -652,7 +655,9 @@ static void drop_last_init_section(struct playlist *pls)
+  * just added (the last one) that is the same as one listed before is that
+  * one: it is not downloaded and given to the demuxer again, and the list does
+  * not grow with each reload. A section of other bytes (another address or
+- * range, another key or IV) is a new one. */
++ * range, another key or IV) is a new one. An IV derived from the media
++ * sequence number is not compared: it moves with each live reload while the
++ * section stays the same, which was then fetched again on every reload. */
+ static struct segment *dedup_init_section(struct playlist *pls,
+                                           struct segment *sec)
+ {
+@@ -661,8 +666,8 @@ static struct segment *dedup_init_section(struct playlist *pls,
+         if (old->size == sec->size && old->url_offset == sec->url_offset &&
+             old->key_type == sec->key_type && !strcmp(old->url, sec->url) &&
+             (sec->key_type == KEY_NONE ||
+-             (!strcmp(old->key, sec->key) &&
+-              !memcmp(old->iv, sec->iv, sizeof(sec->iv))))) {
++             (!strcmp(old->key, sec->key) && old->iv_given == sec->iv_given &&
++              (!sec->iv_given || !memcmp(old->iv, sec->iv, sizeof(sec->iv)))))) {
+             drop_last_init_section(pls);
+             return old;
+         }
+@@ -1280,6 +1285,7 @@ static int parse_playlist(HLSContext *c, const char *url,
+             if (ret < 0)
+                 goto fail;
+             cur_init_section->key_type = key_type;
++            cur_init_section->iv_given = has_iv;
+             if (has_iv) {
+                 memcpy(cur_init_section->iv, iv, sizeof(iv));
+             } else {
