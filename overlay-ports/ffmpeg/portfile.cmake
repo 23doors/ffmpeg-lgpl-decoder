@@ -88,6 +88,7 @@ vcpkg_from_github(
         0114-hls-playlist-needed-again-read-afresh.patch
         0115-hls-buffered-init-section-served-again.patch
         0116-hls-cutoff-drops-untimed-after-dropped.patch
+        0117-hls-init-section-list-kept-when-it-cannot-grow.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

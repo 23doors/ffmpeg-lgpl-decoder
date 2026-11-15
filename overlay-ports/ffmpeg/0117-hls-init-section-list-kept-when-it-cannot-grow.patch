@@ -1,0 +1,53 @@
+hls: an init section the list cannot take is freed, the list kept
+
+new_init_section() added the section with dynarray_add(), which, when it
+cannot grow the list, frees the list, sets its count to 0 and returns
+nothing: the section was returned all the same, not in the list, and
+the sections listed before leaked. Its callers that then drop the
+section just added (an EXT-X-MAP key address that is invalid or could
+not be copied, and 0103's dedup_init_section()) took the element before
+the start of the freed list, a read out of bounds and a free of
+whatever pointer it held.
+
+Add it with av_dynarray_add_nofree() and check it: on failure the list
+is kept, the section is freed and new_init_section() returns NULL,
+which its caller reports as ENOMEM. drop_last_init_section() leaves an
+empty list alone; it is only called after a section was added, and a
+broken invariant should not abort the process playing the stream (an
+av_assert0) nor index the list.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -615,16 +615,28 @@ static struct segment *new_init_section(struct playlist *pls,
+         sec->size = -1;
+     }
+ 
+-    dynarray_add(&pls->init_sections, &pls->n_init_sections, sec);
++    /* dynarray_add() frees the whole list when it cannot grow it, and
++     * leaves sec to leak and its callers to drop an element it no longer
++     * has: keep the list and fail */
++    if (av_dynarray_add_nofree(&pls->init_sections, &pls->n_init_sections, sec) < 0) {
++        av_freep(&sec->url);
++        av_free(sec);
++        return NULL;
++    }
+ 
+     return sec;
+ }
+ 
+ /* The section just added, which the playlist's list holds and frees, is
+- * dropped from it. */
++ * dropped from it. Only called after new_init_section() added one; an empty
++ * list is left alone rather than aborting the caller's process. */
+ static void drop_last_init_section(struct playlist *pls)
+ {
+-    struct segment *sec = pls->init_sections[--pls->n_init_sections];
++    struct segment *sec;
++
++    if (pls->n_init_sections <= 0)
++        return;
++    sec = pls->init_sections[--pls->n_init_sections];
+ 
+     av_freep(&sec->key);
+     av_freep(&sec->url);
