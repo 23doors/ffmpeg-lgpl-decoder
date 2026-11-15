@@ -1,0 +1,72 @@
+hls: the cutoff drops the rest of a PES it dropped the start of
+
+The cutoff after a seek or a catch-up (seek_timestamp) drops packets
+before the position and ends at the first one past it, or at the first
+without a dts. In MPEG-TS the parser splits a PES into frames of which
+only the first carries the PES timestamps: the AAC frames after the first
+of a PES have no dts. So the first audio PES before the position ended
+the cutoff at its second frame, and everything after it came, from
+before the position: an AVSEEK_FLAG_ANY catch-up (a live variant switch,
+a muxed variant's audio) started up to half a second early, its video on
+P-frames before the position.
+
+Remember the streams whose timestamped packet the cutoff dropped, and
+drop their following packets without a dts too. A stream that never has
+a dts still ends the cutoff, as before.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -230,6 +230,9 @@ struct playlist {
+     int64_t catchup_end;
+     int catchup_stream;
+     int catchup_others;
++    /* The subdemuxer streams (0-63) whose last timestamped packet the
++     * cutoff (seek_timestamp) dropped. */
++    uint64_t cutoff_dropped;
+ 
+     /* Renditions associated with this playlist, if any.
+      * Alternative rendition playlists have a single rendition associated
+@@ -3522,6 +3525,7 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+             pls->pb.pub.eof_reached = 0;
+             pls->pb.pub.error = 0;
+             pls->catchup_ts = AV_NOPTS_VALUE;
++            pls->cutoff_dropped = 0;
+             if (c->cur_timestamp != AV_NOPTS_VALUE) {
+                 /* A VOD playlist that brings a video stream (another
+                  * variant, after a seek or during playback) starts it at its
+@@ -3832,6 +3836,17 @@ retry:
+                     pls->seek_stream_index == pls->pkt->stream_index) {
+ 
+                     if (pls->pkt->dts == AV_NOPTS_VALUE) {
++                        /* The rest of a PES whose timestamped start was
++                         * dropped (the frames a parser split from it) goes
++                         * with it: it ended the cutoff, and everything
++                         * after it came, before the position (a muxed
++                         * variant's audio). A stream without timestamps
++                         * still ends it. */
++                        if (pls->pkt->stream_index < 64 &&
++                            pls->cutoff_dropped & (1ULL << pls->pkt->stream_index)) {
++                            av_packet_unref(pls->pkt);
++                            continue;
++                        }
+                         pls->seek_timestamp = AV_NOPTS_VALUE;
+                         break;
+                     }
+@@ -3859,6 +3874,8 @@ retry:
+                                          AV_TIME_BASE_Q, AV_ROUND_DOWN) >
+                         pls->seek_timestamp)
+                         break;
++                    if (pls->pkt->stream_index < 64)
++                        pls->cutoff_dropped |= 1ULL << pls->pkt->stream_index;
+                 }
+                 av_packet_unref(pls->pkt);
+             }
+@@ -4181,6 +4198,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+         restart_init_section(pls);
+         pls->segment_boundary = 0;
+         pls->catchup_ts = AV_NOPTS_VALUE;
++        pls->cutoff_dropped = 0;
+ 
+         /* The discard in hls_read_packet compares this playlist's packet DTS
+          * against seek_timestamp, but seek_timestamp is on c->first_timestamp's
