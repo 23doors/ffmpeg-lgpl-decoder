@@ -15,10 +15,16 @@ seg_skip=never. The segment after the skipped one asks for the section
 again. An early open of the skipped segment (http_multiple) is dropped. A
 finished playlist returns the error at once, as before.
 
+An interrupt is no failure: AVERROR_EXIT from the section's request is
+returned as it is, also when the interrupt callback no longer says so
+when hls asks (a one-shot callback), and the section is asked for on the
+next call. The segment's own open and its early open take an
+AVERROR_EXIT the same way (they asked only the callback).
+
 diff --git a/libavformat/hls.c b/libavformat/hls.c
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -2150,6 +2150,37 @@ restart:
+@@ -2156,6 +2156,39 @@ restart:
  
          /* load/update Media Initialization Section, if any */
          ret = update_init_section(v, seg);
@@ -26,8 +32,10 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
 +            /* On a live playlist, the initialization section's failure is
 +             * one of the segment it maps: retried, skipped and failed for
 +             * good as the segment's own would be (seg_max_retry, seg_skip,
-+             * live_reload_timeout). The next segment asks for it again. */
-+            if (ff_check_interrupt(c->interrupt_callback))
++             * live_reload_timeout). The next segment asks for it again.
++             * An interrupt is none, also when the callback has dropped by
++             * now: the section is asked for again on the next call. */
++            if (ret == AVERROR_EXIT || ff_check_interrupt(c->interrupt_callback))
 +                return AVERROR_EXIT;
 +            if (!v->segment_error_time)
 +                v->segment_error_time = open_start;
@@ -56,3 +64,21 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
          if (ret)
              return ret;
  
+@@ -2175,7 +2208,7 @@ restart:
+         }
+         v->input_next_error = 0;
+         if (ret < 0) {
+-            if (ff_check_interrupt(c->interrupt_callback))
++            if (ret == AVERROR_EXIT || ff_check_interrupt(c->interrupt_callback))
+                 return AVERROR_EXIT;
+             av_log(v->parent, AV_LOG_WARNING, "Failed to open segment %"PRId64" of playlist %d\n",
+                    v->cur_seq_no,
+@@ -2227,7 +2260,7 @@ restart:
+ 
+         ret = open_input(c, v, seg, &v->input_next, &v->input_next_end, 1);
+         if (ret < 0) {
+-            if (ff_check_interrupt(c->interrupt_callback))
++            if (ret == AVERROR_EXIT || ff_check_interrupt(c->interrupt_callback))
+                 return AVERROR_EXIT;
+             av_log(v->parent, AV_LOG_WARNING, "Failed to open segment %"PRId64" of playlist %d\n",
+                    v->cur_seq_no + 1,

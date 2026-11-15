@@ -25,7 +25,7 @@ This patch adds the third point; the others restate what 0071-0101 do.
 diff --git a/libavformat/hls.c b/libavformat/hls.c
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -1947,9 +1947,18 @@ static int playlist_needed(struct playlist *pls)
+@@ -1954,9 +1954,18 @@ static int playlist_needed(struct playlist *pls)
      return 0;
  }
  
@@ -46,7 +46,7 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
  static int reload_error_is_transient(int err)
  {
      switch (err) {
-@@ -1960,7 +1969,7 @@ static int reload_error_is_transient(int err)
+@@ -1967,7 +1976,7 @@ static int reload_error_is_transient(int err)
      case AVERROR_HTTP_OTHER_4XX:
          return 0;
      default:
@@ -55,7 +55,7 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
      }
  }
  
-@@ -2078,10 +2087,11 @@ check_segments:
+@@ -2085,10 +2094,11 @@ check_segments:
   * being skipped. A live playlist moves on without the segment; a finished one
   * would just play on with a gap. With seg_skip=live, a live playlist whose
   * segments have all failed for live_reload_timeout returns the error too, as
@@ -70,7 +70,7 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
             (c->seg_skip == SEG_SKIP_LIVE && v->finished) ||
             (c->seg_skip == SEG_SKIP_LIVE &&
              av_gettime_relative() - v->segment_error_time >= live_reload_timeout(v, c));
-@@ -2140,7 +2150,7 @@ restart:
+@@ -2146,7 +2156,7 @@ restart:
          /* A segment whose early open failed and that left the playlist before
           * it was due counts as failed and skipped. */
          if (v->input_next_error && v->input_next_seq_no < v->cur_seq_no &&
@@ -79,7 +79,7 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
              av_log(v->parent, AV_LOG_ERROR, "Segment %"PRId64" of playlist %d failed too many times: %s\n",
                     v->input_next_seq_no, v->index, av_err2str(v->input_next_error));
              ret = v->input_next_error;
-@@ -2160,7 +2170,7 @@ restart:
+@@ -2168,7 +2178,7 @@ restart:
              if (!v->segment_error_time)
                  v->segment_error_time = open_start;
              if (segment_retries >= c->seg_max_retry) {
@@ -88,7 +88,7 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
                      av_log(v->parent, AV_LOG_ERROR, "Initialization section of segment %"PRId64" of playlist %d failed too many times: %s\n",
                             v->cur_seq_no, v->index, av_err2str(ret));
                      return ret;
-@@ -2208,7 +2218,7 @@ restart:
+@@ -2216,7 +2226,7 @@ restart:
              if (!v->segment_error_time)
                  v->segment_error_time = open_start;
              if (segment_retries >= c->seg_max_retry) {
@@ -97,7 +97,7 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
                      av_log(v->parent, AV_LOG_ERROR, "Segment %"PRId64" of playlist %d failed too many times: %s\n",
                             v->cur_seq_no, v->index, av_err2str(ret));
                      /* The failed open closed the input. */
-@@ -2393,7 +2403,8 @@ static int read_data_subtitle_segment(void *opaque, uint8_t *buf, int buf_size)
+@@ -2402,7 +2412,8 @@ static int read_data_subtitle_segment(void *opaque, uint8_t *buf, int buf_size)
               * may: then the playlist failed. */
              if (!v->segment_error_time)
                  v->segment_error_time = open_start;
