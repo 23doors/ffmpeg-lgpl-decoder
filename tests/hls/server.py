@@ -15,6 +15,9 @@ usage: server.py PORT [options]
   --init-fail N[:CODE]      live fMP4: the first N init section requests answer CODE (503)
   --init-cut N              live fMP4: the first N init section requests send the whole
                             Content-Length, half the section, then the connection closes
+  --vod-init-fail N         /vodfmp4/init.mp4: the first N requests answer 503
+  --bad-map A:B             live fMP4: playlist answers A..B (the open's is 1) list
+                            their EXT-X-MAP with BYTERANGE="-1" (garbled)
   --second-port PORT2       also listen on PORT2: a second origin for /xo/
   --long-line LEN           /long/index.m3u8 names its first segment by an absolute
                             address of LEN chars; a cut one answers 400
@@ -27,6 +30,8 @@ usage: server.py PORT [options]
 Paths:
   /vod/index.m3u8   VOD TS, 1 s segments s0..s19
   /vodfmp4/index.m3u8  the same in fMP4, with EXT-X-MAP init.mp4
+  /vodfmp4/gapmap.m3u8  s0-s6 of it; s3 and s4 map a missing init section
+                    (missing.mp4: 404), s5 and s6 init.mp4 again
   /vodfmp4big/index.m3u8  fMP4 640x360 with keyframes over 64 KiB (media/fmp4big)
   /vodtsbig/index.m3u8  the same in TS (media/tsbig, 6.5 MB: past mpegts's 5 MB probe
                     window, which keeps hls's I/O buffer that large until then)
@@ -36,6 +41,10 @@ Paths:
   /live/index.m3u8  live TS, window of 6, 1 s target, started when the server started
   /live/master.m3u8 two variants of it: index.m3u8 and b/index.m3u8 (the same media)
   /livefmp4/index.m3u8  live fMP4 with EXT-X-MAP init.mp4
+  /livefmp4aes/index.m3u8  the same with its init section AES-128 encrypted under
+                    an EXT-X-KEY without IV (so its IV is the media sequence
+                    number the first answer's MAP line has), the segments clear
+                    (METHOD=NONE after the MAP)
   /vtt/subs.m3u8    VOD WebVTT segments ending in a newline, none or a blank line
   /long/index.m3u8  VOD TS with a long first segment URL
   /prog/file.ts     a progressive TS file (s0..s4, 5 s), no Accept-Ranges
@@ -64,7 +73,7 @@ Every request's log line says whether it carried "X-Token" (token=yes/no),
 on which port it came and on which connection (the client's port).
 Every request is logged with its time since start (seconds) to stdout.
 """
-import sys, time, os, threading, socket
+import sys, time, os, threading, socket, subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # the media setup.sh generates (WORKDIR/media)
@@ -100,12 +109,17 @@ if "--trunc" in opt:
     TRUNC = (int(s_), int(b_), int(ms_))
 INIT_CUT = int(opt.get("--init-cut", "0"))
 LONG = int(opt.get("--long-line", "0"))
+VOD_INIT_FAIL = int(opt.get("--vod-init-fail", "0"))
+vod_init_requests = 0
+BAD_MAP = tuple(int(x) for x in opt["--bad-map"].split(":")) if "--bad-map" in opt else None
 LONG_TAG = int(opt.get("--long-tag", "0"))
 CHUNKED = "--chunked" in sys.argv
 TRAILER = "--trailer" in sys.argv
 IPV6 = "--ipv6" in sys.argv
 PORTS = [int(sys.argv[1])] + ([int(opt["--second-port"])] if "--second-port" in opt else [])
 init_requests = 0
+livefmp4_requests = 0
+aes_init_seq = None
 lock = threading.Lock()
 WINDOW = 6
 NSEG = 60
@@ -253,7 +267,7 @@ class H(BaseHTTPRequestHandler):
             log("  client closed")
 
     def route(self, p):
-        global init_requests
+        global init_requests, livefmp4_requests, vod_init_requests, aes_init_seq
         mpegurl = "application/vnd.apple.mpegurl"
         if p == "/live/master.m3u8":
             return self.send(200, b"#EXTM3U\n"
@@ -263,6 +277,13 @@ class H(BaseHTTPRequestHandler):
             p = "/live/" + p[len("/live/b/"):]
         if p == "/vod/index.m3u8":
             return self.send(200, vod_playlist("s%d.ts"), mpegurl)
+        if p == "/vodfmp4/gapmap.m3u8":
+            pl = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:1\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-MEDIA-SEQUENCE:0\n"
+            for k in range(7):
+                if k in (0, 3, 5):
+                    pl += '#EXT-X-MAP:URI="%s"\n' % ("missing.mp4" if k == 3 else "init.mp4")
+                pl += "#EXTINF:1.000000,\ns%d.m4s\n" % k
+            return self.send(200, (pl + "#EXT-X-ENDLIST\n").encode(), mpegurl)
         if p == "/vodfmp4/index.m3u8":
             return self.send(200, vod_playlist("s%d.m4s", head='#EXT-X-MAP:URI="init.mp4"\n'), mpegurl)
         if p == "/aes/index.m3u8":
@@ -285,6 +306,12 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, open(os.path.join(D, "tsbig", "s%d.ts" % n), "rb").read(), "video/mp2t", stall)
         for prefix, d in (("/vodfmp4/", "fmp4"), ("/vodfmp4big/", "fmp4big")):
             if p == prefix + "init.mp4":
+                if prefix == "/vodfmp4/":
+                    with lock:
+                        vod_init_requests += 1
+                        k = vod_init_requests
+                    if k <= VOD_INIT_FAIL:
+                        return self.send(503, b"busy", "text/plain")
                 return self.send(200, open(os.path.join(D, d, "init.mp4"), "rb").read(), "video/mp4")
             if p.startswith(prefix + "s"):
                 n = int(p[len(prefix) + 1:].split(".")[0])
@@ -436,13 +463,23 @@ class H(BaseHTTPRequestHandler):
             self.close_connection = True
             log("  closed after %d of 2147483647 bytes" % len(body))
             return
-        if p == "/live/index.m3u8" or p == "/livefmp4/index.m3u8":
+        if p in ("/live/index.m3u8", "/livefmp4/index.m3u8", "/livefmp4aes/index.m3u8"):
             first, last = live_head()
             fmp4 = p.startswith("/livefmp4")
             pl = "#EXTM3U\n#EXT-X-VERSION:%d\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:%d\n" % (
                 7 if fmp4 else 3, first)
-            if fmp4:
-                pl += '#EXT-X-MAP:URI="init.mp4"\n'
+            if p == "/livefmp4aes/index.m3u8":
+                with lock:
+                    if aes_init_seq is None:
+                        aes_init_seq = first
+                pl += ('#EXT-X-KEY:METHOD=AES-128,URI="key.bin"\n#EXT-X-MAP:URI="init.mp4"\n'
+                       '#EXT-X-KEY:METHOD=NONE\n')
+            elif fmp4:
+                with lock:
+                    livefmp4_requests += 1
+                    k = livefmp4_requests
+                bad = BAD_MAP and BAD_MAP[0] <= k <= BAD_MAP[1]
+                pl += '#EXT-X-MAP:URI="init.mp4"%s\n' % (',BYTERANGE="-1"' if bad else "")
             for n in range(first, last + 1):
                 pl += "#EXTINF:1.000000,\ns%d.%s\n" % (n, "m4s" if fmp4 else "ts")
             if last == NSEG - 1:
@@ -456,7 +493,16 @@ class H(BaseHTTPRequestHandler):
                 return self.send(INIT_CODE, b"busy", "text/plain")
             return self.send(200, open(os.path.join(D, "fmp4", "init.mp4"), "rb").read(), "video/mp4",
                              cut=k <= INIT_CUT)
-        if p.startswith("/livefmp4/s"):
+        if p == "/livefmp4aes/key.bin":
+            return self.send(200, open(os.path.join(D, "aes", "key.bin"), "rb").read(), "application/octet-stream")
+        if p == "/livefmp4aes/init.mp4":
+            key = open(os.path.join(D, "aes", "key.bin"), "rb").read().hex()
+            iv = "%032x" % (aes_init_seq or 0)
+            body = subprocess.run(["openssl", "enc", "-aes-128-cbc", "-K", key, "-iv", iv,
+                                   "-in", os.path.join(D, "fmp4", "init.mp4")],
+                                  stdout=subprocess.PIPE, check=True).stdout
+            return self.send(200, body, "video/mp4")
+        if p.startswith("/livefmp4/s") or p.startswith("/livefmp4aes/s"):
             n = int(p.rsplit("/s", 1)[1].split(".")[0])
             return self.send(200, open(os.path.join(D, "fmp4", "s%d.m4s" % n), "rb").read(), "video/iso.segment")
         if p == "/vtt/subs.m3u8":

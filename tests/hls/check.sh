@@ -1,5 +1,5 @@
 #!/bin/sh
-# The fixture checks of patches 0098-0116 (and the I54 trace) against a
+# The fixture checks of patches 0098-0121 (and the I54 trace) against a
 # harness built by setup.sh. Each check prints PASS or FAIL; the exit status
 # is the number of failures. With the series only up to 0097
 # (setup.sh WORKDIR 0097) all fail but xo-ipv6 (without 0104 the headers go
@@ -16,11 +16,16 @@
 # init-seek, latemap-after, kf-late-switch-fmp4) and live-switch,
 # live-switch-late (0116). latemap-before holds what the series did before
 # 0115 (no init section served before a segment that maps none): it passes
-# up to 0114 too.
+# up to 0114 too. bad-map fails up to 0116 (the garbled reload failed the
+# playlist as ENOMEM) and up to 0117 (the failed reload's unread rest was
+# read as the next answers: 13 failures, not 3). vod-init-gap and
+# vod-init-503 fail up to 0118 (a VOD's init section failure ended it),
+# init-dedup-aes up to 0120 (a keyed section without an IV fetched again on
+# every reload).
 #
 # usage: tests/hls/check.sh WORKDIR [CHECK...]
-#   checks: b19 b20 trunc chunk-trailer sidx id3 i51 i52 init-dedup init-cut
-#           headers-origin i54 cut-body vswitch
+#   checks: b19 b20 trunc chunk-trailer sidx id3 i51 i52 bad-map vod-init init-dedup
+#           init-cut headers-origin i54 cut-body vswitch
 #   (default: all)
 set -u
 W=$(cd "$1" && pwd); shift
@@ -191,6 +196,40 @@ check_i51() { # 0100: a cut address line fails the load with a log
         grep -q 'Playlist line longer than 16383 characters cut' "$OUT/i51-tag.log" && [ "$tag" = 125 ]
     result i51 "16000 chars play (s0=$fits of 125), 17000 fail with INVALIDDATA and a log, a cut DATERANGE plays (s0=$tag)" $?
 }
+check_bad_map() { # 0117, 0118: a garbled EXT-X-MAP on a live reload is played through
+    # three reloads list the init section with BYTERANGE="-1": each fails as
+    # the answer's error (0117: INVALIDDATA; it was ENOMEM, a local error that
+    # failed the playlist at once), the playlist plays on from the last load,
+    # and the next good answer is read (0118: a failed load closes its
+    # kept-alive connection; its unread rest was read as the next answers,
+    # failing them too)
+    run bad-map "--bad-map 2:4" /livefmp4/index.m3u8 -q -maxtime 10
+    fails=$(grep -c 'Failed to reload playlist' "$OUT/bad-map.log")
+    played=$(field bad-map s0)
+    [ "$fails" = 3 ] && grep -q '^maxtime' "$OUT/bad-map.log" && [ "${played:-0}" -gt 200 ] &&
+        ! grep -q 'Cannot allocate memory' "$OUT/bad-map.log"
+    result bad-map "three garbled reloads: three failures ($fails), played on to the end (s0=${played:-none})" $?
+}
+check_vod_init() { # 0119: a finished playlist's init section failure is its segment's
+    # (seg_max_retry, seg_skip): retried and skipped, not the playlist's end.
+    # gapmap: s3 and s4 map a missing section (404), s5 and s6 init.mp4
+    # again: both skipped, s5 and s6 asked for and played (0101's drop of the
+    # skipped segment's early open: otherwise the early-opened s3 is read in
+    # place of s5, which is never asked for); init.mp4 503 once: the open
+    # skips s0 and plays on
+    run vod-init-gap "" /vodfmp4/gapmap.m3u8 -q -maxtime 20
+    s5=$(grep -c 'GET /vodfmp4/s5.m4s ' "$OUT/vod-init-gap.server.log")
+    s6=$(grep -c 'GET /vodfmp4/s6.m4s ' "$OUT/vod-init-gap.server.log")
+    last=$(field vod-init-gap last_pts0)
+    [ "$s5" = 1 ] && [ "$s6" = 1 ] && grep -q '^end: End of file' "$OUT/vod-init-gap.log" &&
+        [ "$(grep -c 'Initialization section of segment [34] .*skipping the segment' "$OUT/vod-init-gap.log")" = 2 ] &&
+        awk -v l="$last" 'BEGIN { exit !(l + 0 >= 6.5) }'
+    result vod-init-gap "a VOD whose s3-s4 map a missing init section: both skipped, s5 and s6 asked for ($s5, $s6) and played to the end (last pts ${last:-none})" $?
+    run vod-init-503 "--vod-init-fail 1" /vodfmp4/index.m3u8 -q -maxtime 20
+    last=$(field vod-init-503 last_pts0)
+    grep -q '^end: End of file' "$OUT/vod-init-503.log" && awk -v l="$last" 'BEGIN { exit !(l + 0 >= 19) }'
+    result vod-init-503 "a VOD's init section 503 once: its segment skipped, played to the end (last pts ${last:-none})" $?
+}
 check_i52() { # 0101: a live init section failure fails its segment, not the input
     run i52-once "--init-fail 1" /livefmp4/index.m3u8 -q -maxtime 5 -o seg_max_retry=0 -o seg_skip=live
     run i52-always "--init-fail 1000000" /livefmp4/index.m3u8 -q -maxtime 20 -o seg_max_retry=0 -o seg_skip=live -o live_reload_timeout=3
@@ -212,6 +251,14 @@ check_init_dedup() { # 0103: a live playlist's unchanged init section is read on
     run dedup "" /livefmp4/index.m3u8 -q -maxtime 5
     req=$(grep -c 'GET /livefmp4/init.mp4' "$OUT/dedup.server.log")
     [ "$req" = 1 ]; result init-dedup "the init section requested once in 5 s of reloads ($req)" $?
+    # 0121: an AES-128 init section whose EXT-X-KEY has no IV (its IV is the
+    # media sequence number at the MAP line, which moves with each reload)
+    run dedup-aes "" /livefmp4aes/index.m3u8 -q -maxtime 6
+    req=$(grep -c 'GET /livefmp4aes/init.mp4' "$OUT/dedup-aes.server.log")
+    reloads=$(grep -c 'GET /livefmp4aes/index.m3u8' "$OUT/dedup-aes.server.log")
+    played=$(field dedup-aes s0)
+    [ "$req" = 1 ] && [ "$reloads" -ge 4 ] && [ "${played:-0}" -gt 100 ]
+    result init-dedup-aes "a keyed init section without an IV requested once over $reloads playlist loads ($req), played (s0=${played:-none})" $?
 }
 run2() { # 0104's fixture
     # run2 NAME A|B [ORIGIN]: the server on two ports (two origins A and B),
@@ -495,6 +542,6 @@ check_vswitch() { # 0113-0116: a video playlist needed anew starts at its segmen
     result afresh-late-audio "late discards, a -> a2 during playback: a2 at the position ($(first afresh-late-audio 1)), its packets a's (crc $got, $want)" $ok
 }
 
-CHECKS=${*:-b19 b20 trunc chunk_trailer sidx id3 i51 i52 init_dedup init_cut headers_origin i54 cut_body vswitch}
+CHECKS=${*:-b19 b20 trunc chunk_trailer sidx id3 i51 i52 bad_map vod_init init_dedup init_cut headers_origin i54 cut_body vswitch}
 for c in $CHECKS; do "check_$(echo "$c" | tr - _)"; done
 exit $FAIL
