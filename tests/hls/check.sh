@@ -354,7 +354,7 @@ near() {
     d=$(first "$1" "$2" | cut -d' ' -f2)
     awk -v d="$d" -v lo="$3" -v hi="$4" 'BEGIN { exit !(d != "" && d + 0 >= lo && d + 0 <= hi) }'
 }
-check_vswitch() { # 0113, 0114: a video playlist needed anew starts at its segment's keyframe
+check_vswitch() { # 0113-0116: a video playlist needed anew starts at its segment's keyframe
     # media/mv: 6 s segments, a 6 s GOP; the timeline's segment 2 starts at
     # 13.48 (the video keyframe's PTS; its DTS is 13.40). At 16.12 a player
     # switches its video (v1 -> v2) or seeks to 16 (RMP: the discards are set
