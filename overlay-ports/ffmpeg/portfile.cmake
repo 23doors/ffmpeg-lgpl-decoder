@@ -97,6 +97,8 @@ vcpkg_from_github(
         0119-hls-finished-playlist-init-section-failure-is-its-segments.patch
         0120-hls-webvtt-boundary-cleared-by-next-data.patch
         0121-hls-keyed-init-section-without-iv-kept.patch
+        # Upstream FFmpeg master's http.c fixes since 8.1.3, not in release/8.1: one patch per commit.
+        0118-http-b66d2aca0f-reuse-a-connection-only-for-the-host-i.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

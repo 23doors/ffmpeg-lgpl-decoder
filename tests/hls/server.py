@@ -70,12 +70,16 @@ Paths:
   /mv/latemap/index.m3u8  v1's segments with an EXT-X-MAP from the fourth on; its
                     init.ts is v1's s5.ts (media packets, at 30 s: an init section
                     served where none is mapped shows as packets from 30 s)
+  /range/file.ts    /prog/file.ts with byte ranges (a Range gets 206), kept alive
+  /rd/file.ts       on the first port (origin A): a redirect (302) to /range/file.ts
+                    on the second (B)
   /xo/index.m3u8    VOD TS on either port: s0 here, s2 by a redirect to the
                     other port, s1 on the other port (a new request on the
                     connection that redirect left open), s3 by a redirect to
                     the other port that redirects back here, s4 here
 Every request's log line says whether it carried "X-Token" (token=yes/no),
-on which port it came and on which connection (the client's port).
+on which port it came, on which connection (the client's port), its Range
+and Cookie (spaces removed) when it had them, and its Host.
 Every request is logged with its time since start (seconds) to stdout.
 """
 import sys, time, os, threading, socket, subprocess
@@ -183,6 +187,13 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def handle(self):
+        # a client that closes a kept-alive connection is no error
+        try:
+            BaseHTTPRequestHandler.handle(self)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def version_string(self):
         return getattr(self, "server_name", None) or BaseHTTPRequestHandler.version_string(self)
 
@@ -256,6 +267,31 @@ class H(BaseHTTPRequestHandler):
         else:
             self.wfile.write(b"0\r\n\r\n")
 
+    def send_range(self, body, ctype):
+        # byte ranges (a Range gets 206 with its Content-Range), the
+        # connection kept alive
+        first, last = 0, len(body) - 1
+        rng = self.headers.get("Range", "")
+        if rng.startswith("bytes="):
+            a, b = rng[len("bytes="):].split("-", 1)
+            first = int(a)
+            if b:
+                last = min(int(b), last)
+        if first > last:
+            self.send_response(416)
+            self.send_header("Content-Range", "bytes */%d" % len(body))
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_response(206 if rng else 200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Accept-Ranges", "bytes")
+        if rng:
+            self.send_header("Content-Range", "bytes %d-%d/%d" % (first, last, len(body)))
+        self.send_header("Content-Length", str(last - first + 1))
+        self.end_headers()
+        self.wfile.write(body[first:last + 1])
+
     def redirect(self, url):
         self.send_response(302)
         self.send_header("Location", url)
@@ -265,10 +301,13 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         p = self.path.split("?")[0]
         port = self.server.server_address[1]
-        log("GET %s port=%d token=%s conn=%d%s" % (p if len(p) < 200 else p[:60] + "...(%d)" % len(p),
-                                                   port, "yes" if self.headers.get("X-Token") else "no",
-                                                   self.client_address[1],
-                                                   " range=" + self.headers["Range"] if self.headers.get("Range") else ""))
+        log("GET %s port=%d token=%s conn=%d%s%s host=%s" % (
+            p if len(p) < 200 else p[:60] + "...(%d)" % len(p),
+            port, "yes" if self.headers.get("X-Token") else "no",
+            self.client_address[1],
+            " range=" + self.headers["Range"] if self.headers.get("Range") else "",
+            " cookie=" + self.headers["Cookie"].replace(" ", "") if self.headers.get("Cookie") else "",
+            self.headers.get("Host", "-")))
         try:
             self.route(p)
         except (BrokenPipeError, ConnectionResetError):
@@ -433,6 +472,14 @@ class H(BaseHTTPRequestHandler):
         if p == "/prog/file.ts":
             body = b"".join(open(os.path.join(D, "ts", "s%d.ts" % n), "rb").read() for n in range(5))
             return self.send(200, body, "video/mp2t", cut=CUT is not None)
+        if p.startswith("/rd/"):
+            # origin A (the first port): a redirect (302, not cached) to
+            # the same file on B
+            other = PORTS[1] if len(PORTS) > 1 else PORTS[0]
+            return self.redirect("http://127.0.0.1:%d/range/%s" % (other, p[len("/rd/"):]))
+        if p == "/range/file.ts":
+            return self.send_range(b"".join(open(os.path.join(D, "ts", "s%d.ts" % n), "rb").read()
+                                            for n in range(5)), "video/mp2t")
         if p == "/prog/sidx.mp4":
             body = open(os.path.join(D, "sidx", "sidx.mp4"), "rb").read()
             first, last = 0, len(body) - 1

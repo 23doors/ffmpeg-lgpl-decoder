@@ -28,8 +28,8 @@
 # every reload, and not logged).
 #
 # usage: tests/hls/check.sh WORKDIR [CHECK...]
-#   checks: b19 b20 trunc chunk-trailer sidx id3 i51 i52 bad-map vod-init init-dedup
-#           init-cut headers-origin i54 cut-body vswitch
+#   checks: b19 b20 trunc chunk-trailer sidx id3 i51 i52 bad-map vod-init init-dedup init-cut
+#           headers-origin i54 cut-body vswitch conn-host
 #   (default: all)
 set -u
 W=$(cd "$1" && pwd); shift
@@ -37,10 +37,12 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 OUT="$W/out"; mkdir -p "$OUT"
 # a harness older than hlsread.c reports less (no CRCs before round 3's):
 # setup.sh builds it again
-if [ "$HERE/hlsread.c" -nt "$W/hlsread" ]; then
-    echo "FAIL harness: $W/hlsread is older than $HERE/hlsread.c (run setup.sh $W)"
-    exit 1
-fi
+for tool in hlsread httpread; do
+    if [ "$HERE/$tool.c" -nt "$W/$tool" ]; then
+        echo "FAIL harness: $W/$tool is older than $HERE/$tool.c (run setup.sh $W)"
+        exit 1
+    fi
+done
 export HLS_FIXTURE_MEDIA="$W/media"
 PORT=${PORT:-18790}
 FAIL=0
@@ -406,6 +408,40 @@ check_cut_body() { # 0107: a cut body from a server without ranges is not read a
     result cut-aes "the cut AES-128 segment requested once ($req), read on to the end (s19: $after), $got of $full video packets" $?
 }
 
+# runh NAME "server args" PATH [httpread args]: httpread on PATH of origin A,
+# server.py on two ports (A_PORT, B_PORT: origins A and B); the logs as run's
+runh() {
+    name=$1; sargs=$2; path=$3; shift 3
+    PORT=$((PORT + 2)); A_PORT=$((PORT - 1)); B_PORT=$PORT
+    python3 -I "$HERE/server.py" $A_PORT --second-port $B_PORT $sargs > "$OUT/$name.server.log" 2>&1 &
+    srv=$!
+    i=0
+    until grep -q listening "$OUT/$name.server.log" 2>/dev/null || [ $i -ge 50 ]; do
+        sleep 0.1; i=$((i + 1))
+    done
+    cap "$W/httpread" "http://127.0.0.1:$A_PORT$path" "$@" > "$OUT/$name.log" 2>&1
+    kill $srv 2>/dev/null; wait $srv 2>/dev/null
+}
+# readcrc NAME K: the CRC of httpread's K-th read
+readcrc() { grep '^read ' "$OUT/$1.log" | sed -n "$2s/.* crc=\([0-9a-f]*\) .*/\1/p"; }
+check_conn_host() { # 0118 (b66d2aca0f): a kept-alive connection serves only its own host
+    # A redirects to B (/rd/ -> /range/, ranged replies); a seek back inside
+    # a ranged reply drains its rest and keeps the connection (a soft seek)
+    # and asks for the opened URL again: before b66d2aca0f that request, with
+    # A's Host and headers (0104 sends them: it is A's URL), went out on the
+    # connection to B
+    runh conn-host-ref "" /rd/file.ts -direct r:1000 r:1000
+    runh conn-host "" /rd/file.ts -direct -o multiple_requests=1 -o request_size=100000 \
+        -o short_seek_size=1000000 -o "headers=X-Token: secret" r:50000 s:1000 r:1000
+    log="$OUT/conn-host.server.log"
+    on_a=$(grep -c "GET /rd/file.ts port=$A_PORT " "$log")
+    on_b=$(grep -c "GET /rd/file.ts port=$B_PORT " "$log")
+    leak=$(grep "port=$B_PORT " "$log" | grep -c 'token=yes')
+    want=$(readcrc conn-host-ref 2); got=$(readcrc conn-host 2)
+    [ "$on_a" = 2 ] && [ "$on_b" = 0 ] && [ "$leak" = 0 ] && [ -n "$want" ] && [ "$got" = "$want" ]
+    result conn-host "A's URL asked of A after the seek ($on_a on A, $on_b on B's connection), the token never to B ($leak), the bytes after the seek right ($got, $want)" $?
+}
+
 # vswitch's helpers. first NAME STREAM: "pts dts key=K" of the stream's first
 # packet after the last group of events (hlsread numbers the groups of events
 # that fire together, groups= in its summary: crcaN covers the packets after
@@ -569,6 +605,6 @@ check_vswitch() { # 0113-0116: a video playlist needed anew starts at its segmen
     result afresh-late-audio "late discards, a -> a2 during playback: a2 at the position ($(first afresh-late-audio 1)), its packets a's (crc $got, $want)" $ok
 }
 
-CHECKS=${*:-b19 b20 trunc chunk_trailer sidx id3 i51 i52 bad_map vod_init init_dedup init_cut headers_origin i54 cut_body vswitch}
+CHECKS=${*:-b19 b20 trunc chunk_trailer sidx id3 i51 i52 bad_map vod_init init_dedup init_cut headers_origin i54 cut_body vswitch conn_host}
 for c in $CHECKS; do "check_$(echo "$c" | tr - _)"; done
 exit $FAIL

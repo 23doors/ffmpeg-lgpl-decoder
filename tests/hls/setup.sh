@@ -3,7 +3,8 @@
 # portfile's REF (checked against its SHA512), applies the
 # portfile's patch series in order, configures a minimal static host build
 # (the hls, mpegts, mov, webvtt and aac demuxers, http/tcp/file/crypto/data,
-# the aac decoder for the packed audio's stream info) and links hlsread,
+# the aac decoder for the packed audio's stream info) and links hlsread and
+# httpread,
 # then generates the fixture media with the system ffmpeg.
 #
 # usage: tests/hls/setup.sh WORKDIR [LAST_PATCH]
@@ -52,9 +53,11 @@ mkdir build
 
 EXTRA=
 [ "$(uname)" = Darwin ] && EXTRA="-framework CoreFoundation -framework Security -liconv"
-cc -O1 -g -Ibuild -Isrc -o hlsread "$HERE/hlsread.c" \
-    build/libavformat/libavformat.a build/libavcodec/libavcodec.a build/libavutil/libavutil.a \
-    -lz -lbz2 -lm -lpthread $EXTRA
+for tool in hlsread httpread; do
+    cc -O1 -g -Ibuild -Isrc -o $tool "$HERE/$tool.c" \
+        build/libavformat/libavformat.a build/libavcodec/libavcodec.a build/libavutil/libavutil.a \
+        -lz -lbz2 -lm -lpthread $EXTRA
+done
 
 M="$W/media"
 if [ ! -f "$M/ts/s59.ts" ] || [ ! -f "$M/fmp4/s59.m4s" ]; then
