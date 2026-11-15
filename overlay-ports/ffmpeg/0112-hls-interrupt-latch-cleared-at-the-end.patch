@@ -1,0 +1,27 @@
+hls: an interrupt latched in the buffer is cleared at the playlist's end
+
+0077 clears AVERROR_EXIT from a playlist's I/O context once data comes
+again. When the input ends where the interrupt cut it (a truncated last
+segment: no data comes, only the end), the error stayed: mov (0108) and
+mpegts (0110) took their short read for the interrupt's on every call
+and returned AVERROR_EXIT without end, instead of the end of the input.
+
+Clear it when the read callback returns the end as well.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -2417,8 +2417,11 @@ static int read_data_continuous(void *opaque, uint8_t *buf, int buf_size)
+         v->read_error = ret;
+     /* An interrupt is transient: once data comes again, the buffer no longer
+      * carries its error, or the playlist's real end would read as that
+-     * interrupt (hls_read_packet() returns the buffer's error). */
+-    else if (ret > 0 && v->pb.pub.error == AVERROR_EXIT)
++     * interrupt (hls_read_packet() returns the buffer's error). Nor once the
++     * end comes: a demuxer whose read the interrupt cut takes the error for
++     * that interrupt (mov, mpegts) and would ask for its data again on every
++     * call, when the input ended where it was cut (a truncated segment). */
++    else if ((ret > 0 || ret == AVERROR_EOF) && v->pb.pub.error == AVERROR_EXIT)
+         v->pb.pub.error = 0;
+     return ret;
+ }
