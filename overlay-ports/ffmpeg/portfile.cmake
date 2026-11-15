@@ -76,6 +76,8 @@ vcpkg_from_github(
         0102-hls-local-errors-not-played-through.patch
         0103-hls-unchanged-init-section-kept.patch
         0104-http-headers-only-to-their-origin.patch
+        0105-crypto-interrupt-not-eof.patch
+        0106-http-chunk-size-line-kept-across-interrupt.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

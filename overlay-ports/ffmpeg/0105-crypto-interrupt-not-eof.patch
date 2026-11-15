@@ -1,0 +1,27 @@
+crypto: an interrupt in the inner read is no end of the input
+
+crypto_read() took every inner read that returned nothing or an error for
+the end of the encrypted input: it set eof, decrypted the last block it
+held as the final one (taking it for PKCS7 padding) and ended. When the
+caller's interrupt callback stops the inner http read (AVERROR_EXIT), an
+AES-128 segment of hls ended there, its last block mangled: 0099 reads an
+unencrypted segment on after an interrupt, an encrypted one lost the rest.
+
+Return AVERROR_EXIT as it is. Nothing was taken from the inner input, and
+what was read before stays in the input buffer, so the next read goes on
+from there. Other errors and the end of the input are handled as before.
+
+diff --git a/libavformat/crypto.c b/libavformat/crypto.c
+--- a/libavformat/crypto.c
++++ b/libavformat/crypto.c
+@@ -199,6 +199,10 @@ retry:
+     while (c->indata - c->indata_used < 2*BLOCKSIZE) {
+         int n = ffurl_read(c->hd, c->inbuffer + c->indata,
+                            sizeof(c->inbuffer) - c->indata);
++        /* The caller's interrupt callback is no end: what was read stays in
++         * inbuffer, and the next read goes on from there. */
++        if (n == AVERROR_EXIT)
++            return n;
+         if (n <= 0) {
+             c->eof = 1;
+             break;
