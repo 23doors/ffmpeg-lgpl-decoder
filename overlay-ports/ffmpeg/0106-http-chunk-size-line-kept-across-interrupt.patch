@@ -13,10 +13,11 @@ Keep the line read so far in the context and go on with it on the next
 read; it is reset with the reply's headers. Replies with a Content-Length
 are not affected.
 
-The line after the last chunk (the reply's end on a connection kept for
-the next request, as hls's segments are) is read the same way: an
-interrupt in it left its CR LF unread, and the next reply on the
-connection took it for its status line.
+The lines after the last chunk (the reply's end on a connection kept for
+the next request, as hls's segments are) are read the same way, up to the
+blank line that ends them: an interrupt in them left their CR LF unread,
+and a trailer field (RFC 9112 7.1.2) ended the reply at its first line,
+so the next reply on the connection took the rest for its status line.
 
 diff --git a/libavformat/http.c b/libavformat/http.c
 --- a/libavformat/http.c
@@ -45,7 +46,7 @@ diff --git a/libavformat/http.c b/libavformat/http.c
      s->filesize_from_content_range = UINT64_MAX;
  
      for (;;) {
-@@ -1807,12 +1817,31 @@ static int http_buf_read(URLContext *h, uint8_t *buf, int size)
+@@ -1807,12 +1817,33 @@ static int http_buf_read(URLContext *h, uint8_t *buf, int size)
          }
          if (!s->chunksize) {
              char line[32];
@@ -73,6 +74,8 @@ diff --git a/libavformat/http.c b/libavformat/http.c
 +                line[s->chunk_line_len] = '\0';
 +                s->chunk_line_len = 0;
 +                if (s->chunk_trailer) {
++                    if (*line)
++                        continue;    /* a trailer field: skipped */
 +                    s->chunk_trailer = 0;
 +                    s->chunkend = 1;
 +                    return 0;
@@ -83,7 +86,7 @@ diff --git a/libavformat/http.c b/libavformat/http.c
  
              s->chunksize = strtoull(line, NULL, 16);
  
-@@ -1821,9 +1850,9 @@ static int http_buf_read(URLContext *h, uint8_t *buf, int size)
+@@ -1821,9 +1852,9 @@ static int http_buf_read(URLContext *h, uint8_t *buf, int size)
                      s->chunksize);
  
              if (!s->chunksize && s->multiple_requests) {
