@@ -2,16 +2,17 @@ hls: a keyed init section without an IV is kept across live reloads
 
 0103 keeps the init section a live reload lists again when it names the
 same bytes, comparing address, range, key and IV. An EXT-X-MAP under an
-EXT-X-KEY without an IV gets its IV from the media sequence number at
-the MAP line, which moves with each reload of a live window, so the
+EXT-X-KEY without an IV gets its IV from the media sequence number of
+the segment after the MAP line, which moves with each reload of a live window, so the
 section never matched one listed before: it was fetched and given to the
 demuxer again on every reload ("Found duplicated MOOV Atom"), as before
 0103.
 
 Remember whether the IV was given, and compare IVs only when both were:
 a derived IV of the same address, range and key is the same section.
-Such a playlist breaks RFC 8216 4.3.2.5, which requires the IV of an
-encrypted EXT-X-MAP, and other players derive another IV or none (hls.js
+Under METHOD=AES-128 such a playlist breaks RFC 8216 4.3.2.5, which
+requires the IV of an EXT-X-MAP encrypted whole (SAMPLE-AES leaves the
+section in the clear and needs none), and other players derive another IV or none (hls.js
 uses 0, ExoPlayer rejects the playlist): log it once per playlist, so a
 section that does not decrypt has a hint.
 
@@ -58,16 +59,17 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
              drop_last_init_section(pls);
              return old;
          }
-@@ -1280,6 +1286,14 @@ static int parse_playlist(HLSContext *c, const char *url,
+@@ -1281,6 +1287,15 @@ static int parse_playlist(HLSContext *c, const char *url,
              if (ret < 0)
                  goto fail;
              cur_init_section->key_type = key_type;
 +            cur_init_section->iv_given = has_iv;
-+            if (key_type != KEY_NONE && !has_iv && !pls->map_iv_warned) {
++            if (key_type == KEY_AES_128 && !has_iv && !pls->map_iv_warned) {
 +                av_log(c->ctx, AV_LOG_WARNING,
-+                       "Playlist %d: an encrypted EXT-X-MAP without an IV (RFC 8216 "
++                       "Playlist %d: an AES-128 EXT-X-MAP without an IV (RFC 8216 "
 +                       "4.3.2.5 requires one): its IV is the media sequence number "
-+                       "of the load that first lists it\n", pls->index);
++                       "of the segment after the MAP line, in the load that first "
++                       "lists it\n", pls->index);
 +                pls->map_iv_warned = 1;
 +            }
              if (has_iv) {
