@@ -1,0 +1,83 @@
+hls: a live playlist's unchanged initialization section is kept
+
+Each load of a playlist adds a new section for every EXT-X-MAP it lists,
+and a segment's section is downloaded when it is not the one read last,
+compared by pointer. A live fMP4 playlist lists the same EXT-X-MAP on
+every reload, so the section was downloaded again and given to the
+demuxer again after each reload ("Found duplicated MOOV Atom" from mov),
+one more request per reload, each of which may fail (0101); and the
+playlist's list of sections grew by one per reload until the input was
+closed.
+
+Keep the section listed before when the new one names the same bytes
+(address, range, key and IV): segments then map the section already read.
+Also drop a section whose key address is invalid or could not be copied
+from the list before it is freed: it was freed while the list still held
+it, which freed it again when the playlist was closed.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -603,6 +603,39 @@ static struct segment *new_init_section(struct playlist *pls,
+     return sec;
+ }
+ 
++/* A live playlist lists its EXT-X-MAP again on each reload. The section
++ * just added (the last one) that is the same as one listed before is that
++ * one: it is not downloaded and given to the demuxer again, and the list does
++ * not grow with each reload. A section of other bytes (another address or
++ * range, another key or IV) is a new one. */
++/* The section just added, which the playlist's list holds and frees, is
++ * dropped from it. */
++static void drop_last_init_section(struct playlist *pls)
++{
++    struct segment *sec = pls->init_sections[--pls->n_init_sections];
++
++    av_freep(&sec->key);
++    av_freep(&sec->url);
++    av_free(sec);
++}
++
++static struct segment *dedup_init_section(struct playlist *pls,
++                                          struct segment *sec)
++{
++    for (int i = 0; i < pls->n_init_sections - 1; i++) {
++        struct segment *old = pls->init_sections[i];
++        if (old->size == sec->size && old->url_offset == sec->url_offset &&
++            old->key_type == sec->key_type && !strcmp(old->url, sec->url) &&
++            (sec->key_type == KEY_NONE ||
++             (!strcmp(old->key, sec->key) &&
++              !memcmp(old->iv, sec->iv, sizeof(sec->iv))))) {
++            drop_last_init_section(pls);
++            return old;
++        }
++    }
++    return sec;
++}
++
+ static void handle_init_section_args(void *context, const char *key,
+                                      int key_len, char **dest, int *dest_len)
+ {
+@@ -1223,19 +1256,20 @@ static int parse_playlist(HLSContext *c, const char *url,
+             if (key_type != KEY_NONE) {
+                 ff_make_absolute_url(tmp_str, sizeof(tmp_str), url, key);
+                 if (!tmp_str[0]) {
+-                    av_free(cur_init_section);
++                    drop_last_init_section(pls);
+                     ret = AVERROR_INVALIDDATA;
+                     goto fail;
+                 }
+                 cur_init_section->key = av_strdup(tmp_str);
+                 if (!cur_init_section->key) {
+-                    av_free(cur_init_section);
++                    drop_last_init_section(pls);
+                     ret = AVERROR(ENOMEM);
+                     goto fail;
+                 }
+             } else {
+                 cur_init_section->key = NULL;
+             }
++            cur_init_section = dedup_init_section(pls, cur_init_section);
+ 
+         } else if (av_strstart(line, "#EXT-X-START:", &ptr)) {
+             const char *time_offset_value = NULL;
