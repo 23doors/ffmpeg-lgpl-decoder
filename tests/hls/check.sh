@@ -428,7 +428,7 @@ runh() {
 }
 # readcrc NAME K: the CRC of httpread's K-th read
 readcrc() { grep '^read ' "$OUT/$1.log" | sed -n "$2s/.* crc=\([0-9a-f]*\) .*/\1/p"; }
-check_conn_host() { # 0118 (b66d2aca0f): a kept-alive connection serves only its own host
+check_conn_host() { # 0122 (b66d2aca0f): a kept-alive connection serves only its own host
     # A redirects to B (/rd/ -> /range/, ranged replies); a seek back inside
     # a ranged reply drains its rest and keeps the connection (a soft seek)
     # and asks for the opened URL again: before b66d2aca0f that request, with
@@ -454,13 +454,13 @@ cookie() {
 }
 NL='
 '
-check_cookies() { # 0119-0130: the cookie series (88fbd111ea ... de6fb646f7)
-    # 0119: a Domain is matched against the host, not host:port (a cookie
+check_cookies() { # 0123-0134: the cookie series (88fbd111ea ... de6fb646f7)
+    # 0123: a Domain is matched against the host, not host:port (a cookie
     # with a Domain never went to a URL with a port)
     runh ck-port "" /range/file.ts -direct -o "cookies=d=1; Domain=127.0.0.1; Path=/" r:1000
     c=$(cookie ck-port $A_PORT /range/file.ts)
     [ "$c" = d=1 ]; result cookie-port "Domain=127.0.0.1 goes to 127.0.0.1:port ($c)" $?
-    # 0120: a Domain matches only at a label boundary (Domain=calhost went
+    # 0124: a Domain matches only at a label boundary (Domain=calhost went
     # to localhost)
     HOST=localhost
     runh ck-label "" /range/file.ts -direct \
@@ -468,52 +468,52 @@ check_cookies() { # 0119-0130: the cookie series (88fbd111ea ... de6fb646f7)
     HOST=
     c=$(cookie ck-label $A_PORT /range/file.ts)
     [ "$c" = m=1 ]; result cookie-label "Domain=calhost not to localhost, Domain=localhost to it ($c)" $?
-    # 0121: a Path matches only at a segment boundary (Path=/ran went to /range/)
+    # 0125: a Path matches only at a segment boundary (Path=/ran went to /range/)
     runh ck-segment "" /range/file.ts -direct -o "cookies=p=1; Path=/ran${NL}q=1; Path=/range" r:1000
     c=$(cookie ck-segment $A_PORT /range/file.ts)
     [ "$c" = q=1 ]; result cookie-segment "Path=/ran not to /range/, Path=/range to it ($c)" $?
-    # 0122: a cookie a reply sets without a Domain goes back only to its host
+    # 0126: a cookie a reply sets without a Domain goes back only to its host
     # (127.0.0.1's session cookie went to localhost after its redirect there;
     # cookies are scoped by host, not port)
     runh ck-set-hostonly "" "/rdc/file.ts?c=sess%3Dabc%3B%20Path%3D%2F&h=localhost" -direct r:1000
     c=$(cookie ck-set-hostonly $B_PORT /range/file.ts)
     [ "$c" = - ]; result cookie-set-hostonly "127.0.0.1's Set-Cookie without a Domain not sent to localhost ($c)" $?
-    # 0123: a reply's cookie for a Domain that does not cover its host is
+    # 0127: a reply's cookie for a Domain that does not cover its host is
     # ignored (127.0.0.1 set one for localhost, which got it)
     runh ck-foreign "" "/rdc/file.ts?c=inj%3D1%3B%20Domain%3Dlocalhost%3B%20Path%3D%2F&h=localhost" -direct r:1000
     c=$(cookie ck-foreign $B_PORT /range/file.ts)
     [ "$c" = - ]; result cookie-foreign "127.0.0.1's Set-Cookie for Domain=localhost ignored ($c at localhost)" $?
-    # 0124: paths match case-sensitively (Path=/RANGE went to /range/)
+    # 0128: paths match case-sensitively (Path=/RANGE went to /range/)
     runh ck-case "" /range/file.ts -direct -o "cookies=c=1; Path=/RANGE${NL}k=1; Path=/range" r:1000
     c=$(cookie ck-case $A_PORT /range/file.ts)
     [ "$c" = k=1 ]; result cookie-case "Path=/RANGE not to /range/, Path=/range to it ($c)" $?
-    # 0125: behind a proxy the Path is matched against the request's path,
+    # 0129: behind a proxy the Path is matched against the request's path,
     # not the whole URL the proxy is asked for (no cookie with a Path went);
     # the proxy is B (runh's second port)
     runh ck-proxy "" /range/file.ts -direct -o "http_proxy=http://127.0.0.1:$((PORT + 2))" \
         -o "cookies=pp=1; Path=/range" r:1000
     c=$(grep 'GET /range/file.ts .* proxied' "$OUT/ck-proxy.server.log" | head -1 | sed -n 's/.* cookie=\([^ ]*\) .*/\1/p')
     [ "$c" = pp=1 ]; result cookie-proxy "Path=/range sent through the proxy (${c:--})" $?
-    # 0126: a Domain matches an IP address only exactly (Domain=0.0.1 went
+    # 0130: a Domain matches an IP address only exactly (Domain=0.0.1 went
     # to 127.0.0.1)
     runh ck-ip "" /range/file.ts -direct -o "cookies=ip=1; Domain=0.0.1; Path=/${NL}ok=1; Domain=127.0.0.1; Path=/" r:1000
     c=$(cookie ck-ip $A_PORT /range/file.ts)
     [ "$c" = ok=1 ]; result cookie-ip "Domain=0.0.1 not to 127.0.0.1, Domain=127.0.0.1 to it ($c)" $?
-    # 0127, 0129: a Secure cookie goes over https only (0127 keeps the bare
-    # Secure attribute, which parse_set_cookie() dropped; 0129 checks it)
+    # 0131, 0133: a Secure cookie goes over https only (0131 keeps the bare
+    # Secure attribute, which parse_set_cookie() dropped; 0133 checks it)
     runh ck-secure "" /range/file.ts -direct -o "cookies=s=1; Secure; Path=/${NL}n=1; Path=/" r:1000
     c=$(cookie ck-secure $A_PORT /range/file.ts)
     [ "$c" = n=1 ]; result cookie-secure "a Secure cookie not over http, a plain one sent ($c)" $?
-    # 0128: an attribute name is trimmed ("Path =/other" was no Path)
+    # 0132: an attribute name is trimmed ("Path =/other" was no Path)
     runh ck-attr-space "" /range/file.ts -direct -o "cookies=w=1; Path =/other${NL}v=1; Path=/" r:1000
     c=$(cookie ck-attr-space $A_PORT /range/file.ts)
     [ "$c" = v=1 ]; result cookie-attr-space "\"Path =/other\" not to /range/, Path=/ to it ($c)" $?
-    # 0130: a cookie given without a Domain goes only to the opened URL's
+    # 0134: a cookie given without a Domain goes only to the opened URL's
     # host (it went to localhost after 127.0.0.1's redirect); 127.0.0.1 gets it
     runh ck-given-hostonly "" "/rdc/file.ts?h=localhost" -direct -o "cookies=g=1; Path=/" r:1000
     a=$(cookie ck-given-hostonly $A_PORT /rdc/file.ts); b=$(cookie ck-given-hostonly $B_PORT /range/file.ts)
     [ "$a" = g=1 ] && [ "$b" = - ]; result cookie-given-hostonly "a given cookie without a Domain to 127.0.0.1 ($a), not to localhost after its redirect ($b)" $?
-    # 0130 in hls (RMP's case: the cookies option copied to every playlist
+    # 0134 in hls (RMP's case: the cookies option copied to every playlist
     # and segment request): /xo/'s playlist on 127.0.0.1 names s1 on
     # localhost; s0 and s4 on 127.0.0.1 get the cookie, s1 does not
     run2h() {
@@ -535,7 +535,7 @@ check_cookies() { # 0119-0130: the cookie series (88fbd111ea ... de6fb646f7)
     result cookie-hls "hls: a given cookie to the playlist's host (s0 $s0, s4 $s4), not to a segment on localhost (s1 $s1; $segs segments)" $?
 }
 
-check_status_line() { # 0132 (e48a073d7e), 0133: malformed status lines fail the open
+check_status_line() { # 0136 (e48a073d7e), 0137: malformed status lines fail the open
     # before e48a073d7e they read as status 0, a success: the body (of an
     # error, or of no http server) went to the demuxer
     for kind in nocode short plus badver; do
@@ -544,7 +544,7 @@ check_status_line() { # 0132 (e48a073d7e), 0133: malformed status lines fail the
         grep -q '^open failed: Invalid data' "$OUT/st-$kind.log"
         result status-$kind "the status line of /status/$kind fails the open ($line)" $?
     done
-    # 0133: SHOUTcast's "ICY 200 OK" still opens (e48a073d7e rejects it;
+    # 0137: SHOUTcast's "ICY 200 OK" still opens (e48a073d7e rejects it;
     # upstream reads ICY through libcurl, which the pack does not build) and
     # "ICY 404" is an error now (it read as status 0 before e48a073d7e)
     runh st-icy "" /status/icy -direct ra
@@ -561,7 +561,7 @@ check_status_line() { # 0132 (e48a073d7e), 0133: malformed status lines fail the
     grep -q '^read -1 got 4096 ' "$OUT/st-bare.log"
     result status-bare "HTTP/1.1 200 without a reason reads its body" $?
 }
-check_bad_range() { # 0134 (2ff5405601): a Content-Range ending before its start fails the open
+check_bad_range() { # 0138 (2ff5405601): a Content-Range ending before its start fails the open
     # (before, http asked again and again for the rest: capped at 10 s here)
     CAPS=10
     runh badrange "" /badrange/file.ts -direct ra
@@ -570,8 +570,8 @@ check_bad_range() { # 0134 (2ff5405601): a Content-Range ending before its start
     grep -q '^open failed: Invalid data' "$OUT/badrange.log" && [ "$req" = 1 ]
     result bad-range "Content-Range 100-50 fails the open with INVALIDDATA, one request ($req)" $?
 }
-check_crlf() { # 0135, 0136: CR/LF in a proxied host or a CONNECT target is no request
-    # 0136 (6d898e0c17): a host with CR LF through a proxy (B): the Host line
+check_crlf() { # 0139, 0140: CR/LF in a proxied host or a CONNECT target is no request
+    # 0140 (6d898e0c17): a host with CR LF through a proxy (B): the Host line
     # carried the injected header; now the open fails and B gets nothing
     a=$((PORT + 1)); b=$((PORT + 2))
     URL=$(printf 'http://h\r\nX-Injected: yes\r\nx/range/file.ts')
@@ -580,7 +580,7 @@ check_crlf() { # 0135, 0136: CR/LF in a proxied host or a CONNECT target is no r
     req=$(grep -c -E '^ *[0-9.]+ (GET|CONNECT) ' "$OUT/crlf-host.server.log")
     grep -q '^open failed: Invalid argument' "$OUT/crlf-host.log" && [ "$req" = 0 ]
     result crlf-host "a host with CR LF through a proxy: no request ($req), the open fails" $?
-    # 0135 (1bdc17e2c8): the httpproxy protocol's CONNECT target (not in the
+    # 0139 (1bdc17e2c8): the httpproxy protocol's CONNECT target (not in the
     # pack's build: tests/hls enables it for this check)
     a=$((PORT + 1))
     URL=$(printf 'httpproxy://127.0.0.1:%d/h:80\r\nX-Injected: yes' $a)
@@ -593,11 +593,11 @@ check_crlf() { # 0135, 0136: CR/LF in a proxied host or a CONNECT target is no r
 
 # hread NAME K: httpread's K-th read line ("read N got M crc=C end=E")
 hread() { grep '^read ' "$OUT/$1.log" | sed -n "$2p"; }
-check_http_reply() { # 0137-0150: seeks, ends and ranged replies (June and October upstream series)
+check_http_reply() { # 0141-0154: seeks, ends and ranged replies (June and October upstream series)
     runh rr-ref "" /range/file.ts -direct r:1000 r:1000
     runh rr-full "" /range/file.ts -direct ra
     at1000=$(readcrc rr-ref 2); full=$(readcrc rr-full 1)
-    # 0137 (557ab6f2ab): a seek when the connection's short seek size is an
+    # 0141 (557ab6f2ab): a seek when the connection's short seek size is an
     # error (ENOSYS: Windows' tcp, tls over a proxy's tunnel; here https
     # through this server as the proxy) is no soft seek: one compared the
     # error as unsigned, so any seek drained the whole rest of the reply first
@@ -614,9 +614,9 @@ check_http_reply() { # 0137-0150: seeks, ends and ranged replies (June and Octob
     result short-seek "https through a proxy, a seek on: no drain, a new tunnel ($tunnels; $(grep -o 'draining [0-9]* ' "$OUT/short-seek.log"))" $ok
     # a seek back inside a reply on a connection the server closes after it:
     # the soft seek drained it and asked again on the dead connection, the
-    # seek failed with EOF and the input ended (0139 f87323a359: a new
-    # connection then; 0140 bd51105806: no soft seek when "Connection:
-    # close" was sent, whatever the reply says; 0141 e5a3c5e409: "Close"
+    # seek failed with EOF and the input ended (0143 f87323a359: a new
+    # connection then; 0144 bd51105806: no soft seek when "Connection:
+    # close" was sent, whatever the reply says; 0145 e5a3c5e409: "Close"
     # is close)
     runh seek-closed "" "/range/file.ts?close=1" -direct -o multiple_requests=1 r:140000 s:1000 r:1000
     got=$(readcrc seek-closed 2)
@@ -633,40 +633,40 @@ check_http_reply() { # 0137-0150: seeks, ends and ranged replies (June and Octob
     ! grep -q 'Soft-seeking' "$OUT/seek-Close.log" && [ "$got" = "$at1000" ]
     ok=$?
     result seek-Close "\"Connection: Close\" in the reply: a seek back is no soft seek ($(hread seek-Close 2))" $ok
-    # 0138 (62006041cc): a read with no connection before the end is an
+    # 0142 (62006041cc): a read with no connection before the end is an
     # error, not the end (a soft seek found the connection closed and the
     # new one's request failed, 503: no connection is left)
     runh io-not-eof "" "/range/file.ts?close=1&fail=1" -direct -o multiple_requests=1 r:140000 s:1000 r:100
     hread io-not-eof 2 | grep -q 'got 0 .* end=Input/output error'
     ok=$?
     result io-not-eof "after a failed seek, a read is EIO, not EOF ($(hread io-not-eof 2))" $ok
-    # 0143 (17afe2331a): a seek past the end drops the old reply (its
+    # 0147 (17afe2331a): a seek past the end drops the old reply (its
     # buffered bytes, which came with the headers, were read at the new
     # offset)
     runh past-end "" "/range/file.ts?onewrite=1" -direct r:1000 s:151600 r:100
     hread past-end 2 | grep -q 'got 0 .* end=eof'
     ok=$?
     result past-end "a read after a seek past the end gets nothing ($(hread past-end 2))" $ok
-    # 0144 (5db1e097dc): a read up to end_offset ends with EOF (it was EIO)
+    # 0148 (5db1e097dc): a read up to end_offset ends with EOF (it was EIO)
     runh end-offset "" /range/file.ts -direct -o end_offset=5000 ra
     hread end-offset 1 | grep -q 'got 5000 .* end=eof'
     ok=$?
     result end-offset "end_offset=5000: 5000 bytes, then EOF ($(hread end-offset 1))" $ok
-    # 0149 (461f48ece8): an end_offset past the file's end asks for nothing
+    # 0153 (461f48ece8): an end_offset past the file's end asks for nothing
     # past it (a request for the bytes past the end got 416, the read's end)
     runh end-past-file "" /range/file.ts -direct -o multiple_requests=1 -o end_offset=200000 ra
     req=$(grep -c 'GET /range/' "$OUT/end-past-file.server.log")
     hread end-past-file 1 | grep -q 'got 151528 .* end=eof' && [ "$req" = 1 ]
     ok=$?
     result end-past-file "end_offset past the end: the file, EOF, one request ($req; $(hread end-past-file 1))" $ok
-    # 0145 (ca5300c9f4): a chunked partial reply (request_size) is continued
+    # 0149 (ca5300c9f4): a chunked partial reply (request_size) is continued
     # with the next request (it ended at the first range's end)
     runh chunk-range "" "/range/file.ts?chunked=1" -direct -o multiple_requests=1 -o request_size=10000 ra
     got=$(readcrc chunk-range 1)
     [ -n "$full" ] && [ "$got" = "$full" ]
     ok=$?
     result chunk-range "chunked 10000-byte ranges read on to the end ($(hread chunk-range 1))" $ok
-    # 0146 (faab9c8e56): "Content-Range: bytes A-B/*" is no size of 0 (the
+    # 0150 (faab9c8e56): "Content-Range: bytes A-B/*" is no size of 0 (the
     # read got nothing); its end is the 416 past it
     runh star-total "" "/range/file.ts?star=1" -direct ra
     runh star-parts "" "/range/file.ts?star=1" -direct -o multiple_requests=1 -o request_size=50000 ra
@@ -674,14 +674,14 @@ check_http_reply() { # 0137-0150: seeks, ends and ranged replies (June and Octob
     [ "$a" = "$full" ] && [ "$b" = "$full" ] && hread star-parts 1 | grep -q 'end=eof'
     ok=$?
     result star-total "a total of * reads the whole file, in one reply ($(hread star-total 1)) and in 50000-byte ones ($(hread star-parts 1))" $ok
-    # 0147 (b77de7cb6f): a chunked reply after one read to its end (a seek
+    # 0151 (b77de7cb6f): a chunked reply after one read to its end (a seek
     # on the same context, a Plex transcode's) is read (it was taken as ended)
     runh chunk-seek "" "/range/file.ts?chunked=1" -direct -o multiple_requests=1 ra s:1000 r:1000
     got=$(readcrc chunk-seek 2)
     [ "$got" = "$at1000" ]
     ok=$?
     result chunk-seek "a chunked reply read to its end, a seek back: the next chunked reply is read ($(hread chunk-seek 2))" $ok
-    # 0148 (8e9ce80c62): a reply with a Location header is checked against
+    # 0152 (8e9ce80c62): a reply with a Location header is checked against
     # the range asked for (a 200 from byte 0 was handed on as byte 5000's)
     runh range-checked "" "/range/file.ts?noranges=1&loc=1" -direct r:1000 s:5000 r:100
     ! grep -q '^seek 5000 ret=5000' "$OUT/range-checked.log" && grep -q 'Unexpected offset: expected 5000, got 0' "$OUT/range-checked.log"
@@ -715,7 +715,7 @@ near() {
     d=$(first "$1" "$2" | cut -d' ' -f2)
     awk -v d="$d" -v lo="$3" -v hi="$4" 'BEGIN { exit !(d != "" && d + 0 >= lo && d + 0 <= hi) }'
 }
-check_disp() { # 0151 (3ed7bc6580), 0152: rendition dispositions and metadata on their streams
+check_disp() { # 0155 (3ed7bc6580), 0156: rendition dispositions and metadata on their streams
     # the DEFAULT=YES audio rendition's codec changes in its fourth segment
     # (a new PMT: AC-3): hls copied the new stream's parameters and replaced
     # the dispositions from EXT-X-MEDIA with the subdemuxer's (none)
@@ -724,7 +724,7 @@ check_disp() { # 0151 (3ed7bc6580), 0152: rendition dispositions and metadata on
     at_end=$(grep '^disp 0 ' "$OUT/disp.log" | tail -1)
     [ "$at_open" = "disp 0 aac default lang=en" ] && [ "$at_end" = "disp 0 ac3 default lang=en" ]
     result disp "the audio rendition's DEFAULT kept after its codec changed ($at_open; $at_end)" $?
-    # 0152: a Media Playlist's two in-stream audio renditions (en DEFAULT=YES,
+    # 0156: a Media Playlist's two in-stream audio renditions (en DEFAULT=YES,
     # de) are its two audio streams', in order (the first took both: de,
     # default; the second none); two variants share the playlist and its
     # group (listed twice): still one stream each
@@ -735,7 +735,7 @@ check_disp() { # 0151 (3ed7bc6580), 0152: rendition dispositions and metadata on
     result disp-instream "in-stream renditions en (default), de on streams 1, 2 ($got)" $?
 }
 
-check_deselect() { # 0153: a playlist no longer needed is closed at once
+check_deselect() { # 0157: a playlist no longer needed is closed at once
     # RMP's order (tracks picked after avformat_find_stream_info()), v1 to v2
     # at 2.12 s, replies paced at 100 KiB/s: v1's s1, opened early with s0,
     # was read on to its end for nothing (the playlist was dropped only at

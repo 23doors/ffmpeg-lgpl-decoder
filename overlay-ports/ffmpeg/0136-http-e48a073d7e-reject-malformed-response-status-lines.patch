@@ -27,7 +27,7 @@ ICY responses are planned on being re-introduced as opt-in via the new
 libcurl HTTP stack.
 
 Pack note: The tests/ref/fate/http-status-line hunk is left out (8.1 has no
-such test). 0133 accepts the ICY status line again.
+such test). 0137 accepts the ICY status line again.
 
 (cherry picked from commit e48a073d7e4a7053e6f89d64e3dbb11fef41f0b0)
 ---

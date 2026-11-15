@@ -34,7 +34,7 @@ gets none. Without custom headers nothing changes.
 
 user_agent and referer are not secret and are sent as before. cookies
 are left to the cookie rules (RFC 6265; upstream's cookie series,
-0119-0130): a cookie with a Domain goes to the hosts that Domain covers,
+0123-0134): a cookie with a Domain goes to the hosts that Domain covers,
 one without a Domain only back to the host that set it or the opened
 URL's host when it was given in the option. A Cookie line in headers is
 scoped by origin as the other custom headers are.

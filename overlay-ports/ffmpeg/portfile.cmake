@@ -98,43 +98,43 @@ vcpkg_from_github(
         0120-hls-webvtt-boundary-cleared-by-next-data.patch
         0121-hls-keyed-init-section-without-iv-kept.patch
         # Upstream FFmpeg master's http.c fixes since 8.1.3, not in release/8.1: one patch per commit.
-        0118-http-b66d2aca0f-reuse-a-connection-only-for-the-host-i.patch
-        0119-http-88fbd111ea-match-cookies-against-the-host-name-no.patch
-        0120-http-7118404870-match-cookie-domains-only-at-a-label-b.patch
-        0121-http-15b241a171-match-cookie-paths-only-at-a-segment-b.patch
-        0122-http-4f78ae1ada-send-cookies-set-without-a-Domain-only.patch
-        0123-http-820da6158f-ignore-response-cookies-whose-Domain-d.patch
-        0124-http-9b8e45b3ba-match-cookie-paths-case-sensitively.patch
-        0125-http-4e72710e5f-match-cookie-paths-against-the-request.patch
-        0126-http-b6d3ea1220-match-cookie-domains-against-IP-addres.patch
-        0127-http-3088ba46d5-keep-cookie-attributes-that-carry-no-v.patch
-        0128-http-2e52c71caa-trim-trailing-whitespace-from-cookie-a.patch
-        0129-http-d26c080999-do-not-send-Secure-cookies-over-plain-.patch
-        0130-http-de6fb646f7-send-cookies-given-without-a-Domain-on.patch
-        0131-http-d3d2e7f1f6-split-the-response-status-line-parser-.patch
-        0132-http-e48a073d7e-reject-malformed-response-status-lines.patch
-        0133-http-icy-status-line-kept.patch
-        0134-http-2ff5405601-reject-a-Content-Range-whose-end-lies-.patch
-        0135-http-1bdc17e2c8-reject-control-characters-and-spaces-i.patch
-        0136-http-6d898e0c17-reject-CR-and-LF-in-the-hostname.patch
-        0137-http-557ab6f2ab-make-short-seek-logic-more-robust.patch
-        0138-http-62006041cc-don-t-return-EOF-unless-we-actually-re.patch
-        0139-http-f87323a359-properly-fall-back-on-soft-seek-failur.patch
-        0140-http-bd51105806-infer-default-s-willclose-based-on-req.patch
-        0141-http-e5a3c5e409-accept-case-insensitive-Connection-hea.patch
-        0142-http-332ead500a-clear-the-status-code-before-each-requ.patch
-        0143-http-17afe2331a-drop-the-old-reply-when-seeking-past-t.patch
-        0144-http-5db1e097dc-end-a-read-at-the-end-offset-with-EOF.patch
-        0145-http-ca5300c9f4-end-or-continue-a-reply-at-the-end-of-.patch
-        0146-http-faab9c8e56-keep-complete-size-for-Content-Range-b.patch
-        0147-http-b77de7cb6f-clear-the-end-of-a-chunked-reply-for-e.patch
-        0148-http-8e9ce80c62-check-every-reply-against-the-requeste.patch
-        0149-http-461f48ece8-stop-at-the-end-offset-or-the-end-of-t.patch
-        0150-http-aebc956a22-free-the-zlib-state-when-the-open-fail.patch
+        0122-http-b66d2aca0f-reuse-a-connection-only-for-the-host-i.patch
+        0123-http-88fbd111ea-match-cookies-against-the-host-name-no.patch
+        0124-http-7118404870-match-cookie-domains-only-at-a-label-b.patch
+        0125-http-15b241a171-match-cookie-paths-only-at-a-segment-b.patch
+        0126-http-4f78ae1ada-send-cookies-set-without-a-Domain-only.patch
+        0127-http-820da6158f-ignore-response-cookies-whose-Domain-d.patch
+        0128-http-9b8e45b3ba-match-cookie-paths-case-sensitively.patch
+        0129-http-4e72710e5f-match-cookie-paths-against-the-request.patch
+        0130-http-b6d3ea1220-match-cookie-domains-against-IP-addres.patch
+        0131-http-3088ba46d5-keep-cookie-attributes-that-carry-no-v.patch
+        0132-http-2e52c71caa-trim-trailing-whitespace-from-cookie-a.patch
+        0133-http-d26c080999-do-not-send-Secure-cookies-over-plain-.patch
+        0134-http-de6fb646f7-send-cookies-given-without-a-Domain-on.patch
+        0135-http-d3d2e7f1f6-split-the-response-status-line-parser-.patch
+        0136-http-e48a073d7e-reject-malformed-response-status-lines.patch
+        0137-http-icy-status-line-kept.patch
+        0138-http-2ff5405601-reject-a-Content-Range-whose-end-lies-.patch
+        0139-http-1bdc17e2c8-reject-control-characters-and-spaces-i.patch
+        0140-http-6d898e0c17-reject-CR-and-LF-in-the-hostname.patch
+        0141-http-557ab6f2ab-make-short-seek-logic-more-robust.patch
+        0142-http-62006041cc-don-t-return-EOF-unless-we-actually-re.patch
+        0143-http-f87323a359-properly-fall-back-on-soft-seek-failur.patch
+        0144-http-bd51105806-infer-default-s-willclose-based-on-req.patch
+        0145-http-e5a3c5e409-accept-case-insensitive-Connection-hea.patch
+        0146-http-332ead500a-clear-the-status-code-before-each-requ.patch
+        0147-http-17afe2331a-drop-the-old-reply-when-seeking-past-t.patch
+        0148-http-5db1e097dc-end-a-read-at-the-end-offset-with-EOF.patch
+        0149-http-ca5300c9f4-end-or-continue-a-reply-at-the-end-of-.patch
+        0150-http-faab9c8e56-keep-complete-size-for-Content-Range-b.patch
+        0151-http-b77de7cb6f-clear-the-end-of-a-chunked-reply-for-e.patch
+        0152-http-8e9ce80c62-check-every-reply-against-the-requeste.patch
+        0153-http-461f48ece8-stop-at-the-end-offset-or-the-end-of-t.patch
+        0154-http-aebc956a22-free-the-zlib-state-when-the-open-fail.patch
         # Upstream FFmpeg master's hls.c fixes since 8.1.3, not in release/8.1.
-        0151-hls-3ed7bc6580-keep-the-rendition-dispositions-when-a-.patch
-        0152-hls-instream-renditions-per-stream.patch
-        0153-hls-deselected-playlist-closed.patch
+        0155-hls-3ed7bc6580-keep-the-rendition-dispositions-when-a-.patch
+        0156-hls-instream-renditions-per-stream.patch
+        0157-hls-deselected-playlist-closed.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

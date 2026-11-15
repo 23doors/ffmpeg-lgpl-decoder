@@ -7,7 +7,7 @@ Subject: [PATCH] avformat/http: split the response status line parser out of
 Makes the parser reachable from a test program.  No functional change, beyond
 checking the allocation of the exported version string.
 
-Pack note: Needed by 0132 (e48a073d7e); no change in behaviour.
+Pack note: Needed by 0136 (e48a073d7e); no change in behaviour.
 
 (cherry picked from commit d3d2e7f1f691b8ac06062e37b826dc673a7a864e)
 ---

@@ -1,7 +1,7 @@
 http: accept SHOUTcast's ICY status line
 
 A SHOUTcast (v1) server answers "ICY 200 OK", a status line with no HTTP
-version. Before e48a073d7e (0132) it parsed as status 0, which
+version. Before e48a073d7e (0136) it parsed as status 0, which
 check_http_code() took for a success, so such radio streams played (and
 "ICY 404" played its error body too); with e48a073d7e it fails the open
 as malformed. Upstream reads ICY through the libcurl protocol now
