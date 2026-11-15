@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HLS fixture server for the pack's hls/http patches 0098-0107 (check.sh).
+"""HLS fixture server for the pack's hls/http/mov/mpegts patches 0098-0110 (check.sh).
 
 usage: server.py PORT [options]
   --stall SEQ:BYTES:MS      VOD/live segment SEQ (TS, fMP4, AES-128, ID3 audio): send
@@ -9,13 +9,15 @@ usage: server.py PORT [options]
                             follows BYTES
   --live-404 SEQ[,SEQ]      live: these segments answer 404
   --init-fail N[:CODE]      live fMP4: the first N init section requests answer CODE (503)
+  --init-cut N              live fMP4: the first N init section requests send the whole
+                            Content-Length, half the section, then the connection closes
   --second-port PORT2       also listen on PORT2: a second origin for /xo/
   --long-line LEN           /long/index.m3u8 names its first segment by an absolute
                             address of LEN chars; a cut one answers 400
   --long-tag LEN            /long/index.m3u8 has an EXT-X-DATERANGE line of LEN chars
                             (an X-ASSET-URI= this demuxer does not read)
   --ipv6                    listen on ::1, not 127.0.0.1
-  --cut SEQ                 VOD TS segment SEQ, and /prog/file.ts for any SEQ:
+  --cut SEQ                 VOD TS (/vod/, /aes/) segment SEQ, and /prog/file.ts for any SEQ:
                             the whole Content-Length, half the body, then the
                             connection closes (a proxy that lost its upstream)
 Paths:
@@ -70,6 +72,7 @@ if "--init-fail" in opt:
     if len(p) > 1:
         INIT_CODE = int(p[1])
 CUT = int(opt["--cut"]) if "--cut" in opt else None
+INIT_CUT = int(opt.get("--init-cut", "0"))
 LONG = int(opt.get("--long-line", "0"))
 LONG_TAG = int(opt.get("--long-tag", "0"))
 CHUNKED = "--chunked" in sys.argv
@@ -225,7 +228,8 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, open(os.path.join(D, "aes", "key.bin"), "rb").read())
         if p.startswith("/aes/s"):
             n = int(p[len("/aes/s"):].split(".")[0])
-            return self.send(200, open(os.path.join(D, "aes", "s%d.ts" % n), "rb").read(), "video/mp2t", stall)
+            return self.send(200, open(os.path.join(D, "aes", "s%d.ts" % n), "rb").read(), "video/mp2t", stall,
+                             cut=n == CUT)
         if p.startswith("/id3/a"):
             n = int(p[len("/id3/a"):].split(".")[0])
             ts = 900000 + n * 90000 + (100 * 90000 if n == 5 else 0)
@@ -308,7 +312,8 @@ class H(BaseHTTPRequestHandler):
                 k = init_requests
             if k <= INIT_FAIL:
                 return self.send(INIT_CODE, b"busy", "text/plain")
-            return self.send(200, open(os.path.join(D, "fmp4", "init.mp4"), "rb").read(), "video/mp4")
+            return self.send(200, open(os.path.join(D, "fmp4", "init.mp4"), "rb").read(), "video/mp4",
+                             cut=k <= INIT_CUT)
         if p.startswith("/livefmp4/s"):
             n = int(p.rsplit("/s", 1)[1].split(".")[0])
             return self.send(200, open(os.path.join(D, "fmp4", "s%d.m4s" % n), "rb").read(), "video/iso.segment")

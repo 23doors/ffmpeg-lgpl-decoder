@@ -1,12 +1,12 @@
 #!/bin/sh
-# The fixture checks of patches 0098-0107 (and the I54 trace) against a
+# The fixture checks of patches 0098-0110 (and the I54 trace) against a
 # harness built by setup.sh. Each check prints PASS or FAIL; the exit status
 # is the number of failures. With the series only up to 0097
 # (setup.sh WORKDIR 0097) all but xo-ipv6 and i54 fail (without 0104 the
 # headers go everywhere, IPv6 included).
 #
 # usage: tests/hls/check.sh WORKDIR [CHECK...]
-#   checks: b19 b20 id3 i51 i52 init-dedup headers-origin i54 cut-body
+#   checks: b19 b20 id3 i51 i52 init-dedup init-cut headers-origin i54 cut-body
 #   (default: all)
 set -u
 W=$(cd "$1" && pwd); shift
@@ -54,26 +54,34 @@ read_on() { # NAME REF "server args" PATH [LOSS]: interrupted in a stall, nothin
     name=$1; ref=$2; sargs=$3; path=$4; loss=${5:-}
     run "$name" "$sargs" "$path" -q -stallint 300
     want=$(field "$ref" s0); got=$(field "$name" s0); ex=$(field "$name" exits); step=$(field "$name" maxstep0)
-    # any number of interrupts from one on; no packet lost (LOSS=exits: at
-    # most one per interrupt), no gap
-    allowed=0; [ "$loss" = exits ] && allowed=${ex:-0}
-    [ "${ex:-0}" -ge 1 ] && [ -n "$want" ] && [ -n "$got" ] && [ "$got" -le "$want" ] &&
-        [ $((want - got)) -le "$allowed" ] &&
+    want1=$(field "$ref" s1); got1=$(field "$name" s1)
+    # hlsread's interrupts (each may give more than one AVERROR_EXIT)
+    ints=$(grep -c '^interrupt at' "$OUT/$name.log")
+    # interrupted and read on; no video packet lost (LOSS=interrupts: at most
+    # one per interrupt), no audio packet (0110: mpegts kept a cut PES), none
+    # handed on cut, no gap
+    allowed=0; [ "$loss" = interrupts ] && allowed=$ints
+    [ "$ints" -ge 1 ] && [ "${ex:-0}" -ge 1 ] && [ -n "$want" ] && [ -n "$got" ] && [ "$got" -le "$want" ] &&
+        [ $((want - got)) -le "$allowed" ] && [ -n "$want1" ] && [ "$got1" = "$want1" ] &&
+        ! grep -q 'Packet corrupt' "$OUT/$name.log" &&
         awk -v s="$step" 'BEGIN { exit !(s != "" && s + 0 < 0.25) }'
-    result "$name" "interrupted ($ex), $want video packets ($got, $allowed may be lost), no gap (largest step $step s)" $?
+    ok=$?; bad=$(grep -c 'Packet corrupt' "$OUT/$name.log")
+    result "$name" "interrupted ($ints, $ex AVERROR_EXIT), $want video packets ($got, $allowed may be lost), all $want1 audio ($got1), none corrupt ($bad), no gap (largest step $step s)" $ok
 }
 check_b20() { # 0099: an interrupt during a segment's body loses nothing
     run b20-ref "" /vod/index.m3u8 -q
     read_on b20 b20-ref "--stall 12:15000:1500" /vod/index.m3u8
-    # 0106: the stall inside a chunk-size line (chunked transfer encoding)
+    # 0106: the stall inside a chunk-size line (chunked transfer encoding);
+    # 0110: the interrupt falls inside an audio PES there
     read_on b20-chunked b20-ref "--chunked --stall 12:15000:1500" /vod/index.m3u8
     # 0105: an AES-128 segment (crypto.c took the interrupt for its end)
     run b20-aes-ref "" /aes/index.m3u8 -q
     read_on b20-aes b20-aes-ref "--stall 12:15000:1500" /aes/index.m3u8
-    # fMP4: hls reads on, but mov drops the sample an interrupt cut (it moved
-    # past it before reading it; not seekable back): at most one per interrupt
+    # 0108: fMP4 (mov reads the sample an interrupt cut again; one that
+    # spanned a refill of hls's buffer cannot be read again and is lost: at
+    # most one per interrupt, never handed on cut)
     run b20-fmp4-ref "" /vodfmp4/index.m3u8 -q
-    read_on b20-fmp4 b20-fmp4-ref "--stall 12:15000:1500" /vodfmp4/index.m3u8 exits
+    read_on b20-fmp4 b20-fmp4-ref "--stall 12:15000:1500" /vodfmp4/index.m3u8 interrupts
 }
 check_id3() { # 0099: an interrupt in a segment's first read keeps its ID3 timestamp
     # a5's timestamp alone is 100 s on: the step is there only if a5's ID3
@@ -107,6 +115,15 @@ check_i52() { # 0101: a live init section failure fails its segment, not the inp
     grep -q 'skipping the segment' "$OUT/i52-once.log" && [ "${played:-0}" -gt 50 ] &&
         grep -q 'Initialization section of segment .* failed too many times: ' "$OUT/i52-always.log"
     result i52 "one failed request skips its segment (s0=${played:-none}); failing for live_reload_timeout fails" $?
+}
+check_init_cut() { # 0109: a live init section cut part way is not stored
+    # (stock hls stored the half section: the subdemuxer failed on it and
+    # the playlist was lost)
+    run init-cut "--init-cut 1" /livefmp4/index.m3u8 -q -maxtime 5 -o seg_max_retry=0 -o seg_skip=live
+    played=$(field init-cut s0)
+    req=$(grep -c 'GET /livefmp4/init.mp4' "$OUT/init-cut.server.log")
+    [ "${played:-0}" -gt 50 ] && [ "$req" -ge 2 ]
+    result init-cut "the cut section asked for again ($req requests), the stream plays (s0=${played:-none})" $?
 }
 check_init_dedup() { # 0103: a live playlist's unchanged init section is read once
     run dedup "" /livefmp4/index.m3u8 -q -maxtime 5
@@ -220,8 +237,18 @@ check_cut_body() { # 0107: a cut body from a server without ranges is not read a
     grep -q '^end: End of file' "$OUT/cut-hls.log" && [ "$req" = 1 ] && [ "$after" = 1 ] &&
         [ -n "$full" ] && [ "${got:-0}" -lt "$full" ] && [ "$got" -gt $((full * 3 / 4)) ]
     result cut-hls "the cut segment requested once ($req), read on to the end (s19: $after), $got of $full video packets" $?
+    # an AES-128 one (0105 returns the inner read's EIO, no longer taken for
+    # the segment's end with its last block unpadded): the playlist reads on
+    run cut-aes-ref "" /aes/index.m3u8 -q
+    run cut-aes "--cut 5" /aes/index.m3u8 -q -maxtime 20 $RMPO
+    req=$(grep -c 'GET /aes/s5.ts' "$OUT/cut-aes.server.log")
+    after=$(grep -c 'GET /aes/s19.ts' "$OUT/cut-aes.server.log")
+    full=$(field cut-aes-ref s0); got=$(field cut-aes s0)
+    grep -q '^end: End of file' "$OUT/cut-aes.log" && [ "$req" = 1 ] && [ "$after" = 1 ] &&
+        [ -n "$full" ] && [ "${got:-0}" -lt "$full" ] && [ "$got" -gt $((full * 3 / 4)) ]
+    result cut-aes "the cut AES-128 segment requested once ($req), read on to the end (s19: $after), $got of $full video packets" $?
 }
 
-CHECKS=${*:-b19 b20 id3 i51 i52 init_dedup headers_origin i54 cut_body}
+CHECKS=${*:-b19 b20 id3 i51 i52 init_dedup init_cut headers_origin i54 cut_body}
 for c in $CHECKS; do "check_$(echo "$c" | tr - _)"; done
 exit $FAIL
