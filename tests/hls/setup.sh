@@ -1,11 +1,11 @@
 #!/bin/sh
 # Builds the hls fixture harness against the pack's FFmpeg: downloads the
-# portfile's REF (checked against its SHA512), applies the
-# portfile's patch series in order, configures a minimal static host build
-# (the hls, mpegts, mov, webvtt and aac demuxers, http/tcp/file/crypto/data,
-# the aac decoder for the packed audio's stream info) and links hlsread and
-# httpread,
-# then generates the fixture media with the system ffmpeg.
+# portfile's REF (checked against its SHA512), applies the portfile's patch
+# series in order, configures a minimal static host build (the hls, mpegts,
+# mov, webvtt and aac demuxers, http/httpproxy/tcp/file/crypto/data (the
+# pack builds no httpproxy: here for the CONNECT check), the aac decoder for
+# the packed audio's stream info) and links hlsread and httpread, then
+# generates the fixture media with the system ffmpeg.
 #
 # usage: tests/hls/setup.sh WORKDIR [LAST_PATCH]
 #   LAST_PATCH  apply the series only up to this number (e.g. 0097), to see
@@ -47,7 +47,7 @@ mkdir build
      --disable-autodetect --enable-static --disable-shared \
      --disable-avdevice --disable-avfilter --disable-swscale --disable-swresample \
      --enable-demuxer=hls,mpegts,mov,webvtt,aac \
-     --enable-protocol=http,tcp,file,crypto,data \
+     --enable-protocol=http,httpproxy,tcp,file,crypto,data \
      --enable-parser=h264,aac --enable-decoder=aac > configure.log
  make -j"${JOBS:-4}" libavformat/libavformat.a libavcodec/libavcodec.a libavutil/libavutil.a > make.log)
 

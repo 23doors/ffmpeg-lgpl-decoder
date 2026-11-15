@@ -1,0 +1,52 @@
+http: accept SHOUTcast's ICY status line
+
+A SHOUTcast (v1) server answers "ICY 200 OK", a status line with no HTTP
+version. Before e48a073d7e (0132) it parsed as status 0, which
+check_http_code() took for a success, so such radio streams played (and
+"ICY 404" played its error body too); with e48a073d7e it fails the open
+as malformed. Upstream reads ICY through the libcurl protocol now
+(f26f2156c4), which the pack does not build, so internet radio entries of
+an IPTV playlist would stop playing.
+
+Accept "ICY" followed by whitespace as the version part: the code is
+parsed and checked as any other (so "ICY 404" is an error now), the
+version is left empty as before, and the connection is taken to close
+(willclose), as an ICY stream ends with it.
+
+diff --git a/libavformat/http.c b/libavformat/http.c
+index 3ea5ebe..b152ba0 100644
+--- a/libavformat/http.c
++++ b/libavformat/http.c
+@@ -995,17 +995,23 @@ int ff_http_parse_status_line(void *logctx, const char *line, HTTPStatusLine *st
+ 
+     memset(st, 0, sizeof(*st));
+ 
+-    if (!av_strstart(line, "HTTP/", &p) ||
+-        !av_isdigit(p[0]) || p[1] != '.' || !av_isdigit(p[2]) ||
+-        !av_isspace(p[3])) {
+-        av_log(logctx, AV_LOG_ERROR, "Malformed HTTP status line.\n");
+-        return AVERROR_INVALIDDATA;
+-    }
++    /* A SHOUTcast (v1) server answers "ICY 200 OK": no version, and the
++     * connection is the stream's, closed at its end. */
++    if (av_strstart(line, "ICY", &p) && av_isspace(p[0])) {
++        st->willclose = 1;
++    } else {
++        if (!av_strstart(line, "HTTP/", &p) ||
++            !av_isdigit(p[0]) || p[1] != '.' || !av_isdigit(p[2]) ||
++            !av_isspace(p[3])) {
++            av_log(logctx, AV_LOG_ERROR, "Malformed HTTP status line.\n");
++            return AVERROR_INVALIDDATA;
++        }
+ 
+-    av_strlcpy(st->version, p, sizeof(st->version));
+-    st->willclose = !strcmp(st->version, "1.0");
++        av_strlcpy(st->version, p, sizeof(st->version));
++        st->willclose = !strcmp(st->version, "1.0");
+ 
+-    p += 3;
++        p += 3;
++    }
+     while (av_isspace(*p))
+         p++;
+ 

@@ -111,6 +111,12 @@ vcpkg_from_github(
         0128-http-2e52c71caa-trim-trailing-whitespace-from-cookie-a.patch
         0129-http-d26c080999-do-not-send-Secure-cookies-over-plain-.patch
         0130-http-de6fb646f7-send-cookies-given-without-a-Domain-on.patch
+        0131-http-d3d2e7f1f6-split-the-response-status-line-parser-.patch
+        0132-http-e48a073d7e-reject-malformed-response-status-lines.patch
+        0133-http-icy-status-line-kept.patch
+        0134-http-2ff5405601-reject-a-Content-Range-whose-end-lies-.patch
+        0135-http-1bdc17e2c8-reject-control-characters-and-spaces-i.patch
+        0136-http-6d898e0c17-reject-CR-and-LF-in-the-hostname.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

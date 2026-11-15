@@ -70,13 +70,19 @@ Paths:
   /mv/latemap/index.m3u8  v1's segments with an EXT-X-MAP from the fourth on; its
                     init.ts is v1's s5.ts (media packets, at 30 s: an init section
                     served where none is mapped shows as packets from 30 s)
+  /status/KIND      4096 bytes after the status line KIND names (nocode "HTTP/1.1 OK",
+                    short "HTTP/1.1 20 Short", plus "HTTP/1.1 +200 Plus", badver
+                    "HTTP/x 200 Bad version", icy "ICY 200 OK", icy404 "ICY 404 Not
+                    Found", ok "HTTP/1.1 200 OK", bare "HTTP/1.1 200")
+  /badrange/file.ts a 206 with "Content-Range: bytes 100-50/4096"
   /range/file.ts    /prog/file.ts with byte ranges (a Range gets 206), kept alive
   /rd/file.ts       on the first port (origin A): a redirect (302) to /range/file.ts
                     on the second (B)
   /rdc/file.ts?[c=SET-COOKIE][&h=HOST]  a redirect (with that Set-Cookie) to
                     /range/file.ts on HOST (127.0.0.1) at the second port
 A request in a proxy's form (the whole URL) is served as its path, logged
-"proxied".
+"proxied"; a CONNECT is logged with its target and answered 200. A request
+with an X-Injected header is logged "injected".
   /xo/index.m3u8    VOD TS on either port: s0 here, s2 by a redirect to the
                     other port, s1 on the other port (a new request on the
                     connection that redirect left open), s3 by a redirect to
@@ -308,7 +314,8 @@ class H(BaseHTTPRequestHandler):
         # (this server is the proxy and the origin)
         proxied = self.path.startswith("http://")
         if proxied:
-            self.path = "/" + self.path.split("/", 3)[3]
+            parts = self.path.split("/", 3)
+            self.path = "/" + (parts[3] if len(parts) > 3 else "")
         p = self.path.split("?")[0]
         port = self.server.server_address[1]
         log("GET %s port=%d token=%s conn=%d%s%s host=%s" % (
@@ -317,11 +324,27 @@ class H(BaseHTTPRequestHandler):
             self.client_address[1],
             " range=" + self.headers["Range"] if self.headers.get("Range") else "",
             " cookie=" + self.headers["Cookie"].replace(" ", "") if self.headers.get("Cookie") else "",
-            self.headers.get("Host", "-") + (" proxied" if proxied else "")))
+            self.headers.get("Host", "-") + (" proxied" if proxied else "") +
+            (" injected" if self.headers.get("X-Injected") else "")))
         try:
             self.route(p)
         except (BrokenPipeError, ConnectionResetError):
             log("  client closed")
+
+    def do_CONNECT(self):
+        # a proxy's tunnel: logged, answered 200, closed
+        log("CONNECT %s port=%d%s" % (self.path, self.server.server_address[1],
+                                      " injected" if self.headers.get("X-Injected") else ""))
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        self.close_connection = True
+
+    def send_raw(self, status, headers, body):
+        # a reply as given, status line and all
+        self.wfile.write(status.encode() + b"\r\n" + b"".join(h.encode() + b"\r\n" for h in headers) +
+                         b"\r\n" + body)
+        self.close_connection = True
 
     def route(self, p):
         global init_requests, livefmp4_requests, vod_init_requests, aes_init_seq, live_requests
@@ -501,6 +524,19 @@ class H(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
+        if p.startswith("/status/"):
+            # /status/KIND: a reply whose status line is KIND's, 4096 bytes
+            # of file.ts, the connection closed after them
+            body = open(os.path.join(D, "ts", "s0.ts"), "rb").read()[:4096]
+            line = {"nocode": "HTTP/1.1 OK", "short": "HTTP/1.1 20 Short", "plus": "HTTP/1.1 +200 Plus",
+                    "badver": "HTTP/x 200 Bad version", "icy": "ICY 200 OK", "icy404": "ICY 404 Not Found",
+                    "ok": "HTTP/1.1 200 OK", "bare": "HTTP/1.1 200"}[p[len("/status/"):]]
+            return self.send_raw(line, ["Content-Type: video/mp2t", "Connection: close"], body)
+        if p == "/badrange/file.ts":
+            # a 206 whose Content-Range ends before it starts
+            body = open(os.path.join(D, "ts", "s0.ts"), "rb").read()[:4096]
+            return self.send_raw("HTTP/1.1 206 Partial Content",
+                                 ["Content-Range: bytes 100-50/4096", "Content-Length: 4096"], body)
         if p == "/range/file.ts":
             return self.send_range(b"".join(open(os.path.join(D, "ts", "s%d.ts" % n), "rb").read()
                                             for n in range(5)), "video/mp2t")

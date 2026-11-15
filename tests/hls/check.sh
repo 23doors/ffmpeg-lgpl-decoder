@@ -29,7 +29,8 @@
 #
 # usage: tests/hls/check.sh WORKDIR [CHECK...]
 #   checks: b19 b20 trunc chunk-trailer sidx id3 i51 i52 bad-map vod-init init-dedup init-cut
-#           headers-origin i54 cut-body vswitch conn-host cookies
+#           headers-origin i54 cut-body vswitch conn-host cookies status-line
+#           bad-range crlf
 #   (default: all)
 set -u
 W=$(cd "$1" && pwd); shift
@@ -46,11 +47,11 @@ done
 export HLS_FIXTURE_MEDIA="$W/media"
 PORT=${PORT:-18790}
 FAIL=0
-# each run capped at 60 s: timeout (GNU coreutils, Linux) or gtimeout (its
+# each run capped at 60 s (CAPS: other seconds): timeout (GNU coreutils, Linux) or gtimeout (its
 # Homebrew name on macOS); without either the runs go uncapped
 CAP=$(command -v timeout || command -v gtimeout || true)
 [ -n "$CAP" ] || echo "note: no timeout or gtimeout, runs are not capped"
-cap() { if [ -n "$CAP" ]; then "$CAP" 60 "$@"; else "$@"; fi; }
+cap() { if [ -n "$CAP" ]; then "$CAP" "${CAPS:-60}" "$@"; else "$@"; fi; }
 # the options RMP passes for a network HLS input (ffmpeg_input_options.rs)
 RMPO="-o seg_max_retry=0 -o seg_skip=live -o m3u8_hold_counters=10 -o reconnect=1 -o reconnect_streamed=1 -o reconnect_on_network_error=1 -o reconnect_on_http_error=5xx,408,429 -o reconnect_max_retries=3 -o reconnect_delay_max=2 -o rw_timeout=8000000 -o extension_picky=0"
 
@@ -410,7 +411,8 @@ check_cut_body() { # 0107: a cut body from a server without ranges is not read a
 
 # runh NAME "server args" PATH [httpread args]: httpread on PATH of origin A,
 # server.py on two ports (A_PORT, B_PORT: origins A and B); the logs as run's;
-# HOST: the address asked for (127.0.0.1)
+# HOST: the address asked for (127.0.0.1); URL: the whole URL instead (the
+# ports are PORT + 1 and PORT + 2 before the call)
 runh() {
     name=$1; sargs=$2; path=$3; shift 3
     PORT=$((PORT + 2)); A_PORT=$((PORT - 1)); B_PORT=$PORT
@@ -420,7 +422,8 @@ runh() {
     until grep -q listening "$OUT/$name.server.log" 2>/dev/null || [ $i -ge 50 ]; do
         sleep 0.1; i=$((i + 1))
     done
-    cap "$W/httpread" "http://${HOST:-127.0.0.1}:$A_PORT$path" "$@" > "$OUT/$name.log" 2>&1
+    url=${URL:-http://${HOST:-127.0.0.1}:$A_PORT$path}
+    cap "$W/httpread" "$url" "$@" > "$OUT/$name.log" 2>&1
     kill $srv 2>/dev/null; wait $srv 2>/dev/null
 }
 # readcrc NAME K: the CRC of httpread's K-th read
@@ -459,8 +462,10 @@ check_cookies() { # 0119-0130: the cookie series (88fbd111ea ... de6fb646f7)
     [ "$c" = d=1 ]; result cookie-port "Domain=127.0.0.1 goes to 127.0.0.1:port ($c)" $?
     # 0120: a Domain matches only at a label boundary (Domain=calhost went
     # to localhost)
-    HOST=localhost runh ck-label "" /range/file.ts -direct \
+    HOST=localhost
+    runh ck-label "" /range/file.ts -direct \
         -o "cookies=l=1; Domain=calhost; Path=/${NL}m=1; Domain=localhost; Path=/" r:1000
+    HOST=
     c=$(cookie ck-label $A_PORT /range/file.ts)
     [ "$c" = m=1 ]; result cookie-label "Domain=calhost not to localhost, Domain=localhost to it ($c)" $?
     # 0121: a Path matches only at a segment boundary (Path=/ran went to /range/)
@@ -528,6 +533,62 @@ check_cookies() { # 0119-0130: the cookie series (88fbd111ea ... de6fb646f7)
     segs=$(grep -c 'GET /xo/s[0-9]' "$OUT/ck-hls.server.log")
     [ "$s0" = hc=1 ] && [ "$s4" = hc=1 ] && [ "$s1" = - ] && [ "$segs" = 5 ]
     result cookie-hls "hls: a given cookie to the playlist's host (s0 $s0, s4 $s4), not to a segment on localhost (s1 $s1; $segs segments)" $?
+}
+
+check_status_line() { # 0132 (e48a073d7e), 0133: malformed status lines fail the open
+    # before e48a073d7e they read as status 0, a success: the body (of an
+    # error, or of no http server) went to the demuxer
+    for kind in nocode short plus badver; do
+        runh st-$kind "" /status/$kind -direct r:100
+        line=$(grep -E '^(open failed|read )' "$OUT/st-$kind.log" | head -1)
+        grep -q '^open failed: Invalid data' "$OUT/st-$kind.log"
+        result status-$kind "the status line of /status/$kind fails the open ($line)" $?
+    done
+    # 0133: SHOUTcast's "ICY 200 OK" still opens (e48a073d7e rejects it;
+    # upstream reads ICY through libcurl, which the pack does not build) and
+    # "ICY 404" is an error now (it read as status 0 before e48a073d7e)
+    runh st-icy "" /status/icy -direct ra
+    runh st-icy404 "" /status/icy404 -direct ra
+    a=$(grep -E '^(open failed|read )' "$OUT/st-icy.log" | head -1)
+    b=$(grep -E '^(open failed|read )' "$OUT/st-icy404.log" | head -1)
+    # (a body without a length, ended by the close, reads as cut: EIO, as
+    # stock http has it since 1306e5c7d3 so that a live stream reconnects)
+    grep -q '^read -1 got 4096 ' "$OUT/st-icy.log" &&
+        grep -q '^open failed: Server returned 404' "$OUT/st-icy404.log"
+    result status-icy "ICY 200 reads its 4096 bytes ($a), ICY 404 fails ($b)" $?
+    # a bare "HTTP/1.1 200" (no reason) still opens
+    runh st-bare "" /status/bare -direct ra
+    grep -q '^read -1 got 4096 ' "$OUT/st-bare.log"
+    result status-bare "HTTP/1.1 200 without a reason reads its body" $?
+}
+check_bad_range() { # 0134 (2ff5405601): a Content-Range ending before its start fails the open
+    # (before, http asked again and again for the rest: capped at 10 s here)
+    CAPS=10
+    runh badrange "" /badrange/file.ts -direct ra
+    CAPS=
+    req=$(grep -c 'GET /badrange/' "$OUT/badrange.server.log")
+    grep -q '^open failed: Invalid data' "$OUT/badrange.log" && [ "$req" = 1 ]
+    result bad-range "Content-Range 100-50 fails the open with INVALIDDATA, one request ($req)" $?
+}
+check_crlf() { # 0135, 0136: CR/LF in a proxied host or a CONNECT target is no request
+    # 0136 (6d898e0c17): a host with CR LF through a proxy (B): the Host line
+    # carried the injected header; now the open fails and B gets nothing
+    a=$((PORT + 1)); b=$((PORT + 2))
+    URL=$(printf 'http://h\r\nX-Injected: yes\r\nx/range/file.ts')
+    runh crlf-host "" - -direct -o "http_proxy=http://127.0.0.1:$b" r:100
+    URL=
+    req=$(grep -c -E '^ *[0-9.]+ (GET|CONNECT) ' "$OUT/crlf-host.server.log")
+    grep -q '^open failed: Invalid argument' "$OUT/crlf-host.log" && [ "$req" = 0 ]
+    result crlf-host "a host with CR LF through a proxy: no request ($req), the open fails" $?
+    # 0135 (1bdc17e2c8): the httpproxy protocol's CONNECT target (not in the
+    # pack's build: tests/hls enables it for this check)
+    a=$((PORT + 1))
+    URL=$(printf 'httpproxy://127.0.0.1:%d/h:80\r\nX-Injected: yes' $a)
+    runh crlf-connect "" - r:1
+    URL=
+    req=$(grep -c 'CONNECT ' "$OUT/crlf-connect.server.log")
+    grep -q '^open failed: Invalid argument' "$OUT/crlf-connect.log" && [ "$req" = 0 ]
+    result crlf-connect "a CONNECT target with CR LF: no request ($req), the open fails" $?
 }
 
 # vswitch's helpers. first NAME STREAM: "pts dts key=K" of the stream's first
@@ -693,6 +754,6 @@ check_vswitch() { # 0113-0116: a video playlist needed anew starts at its segmen
     result afresh-late-audio "late discards, a -> a2 during playback: a2 at the position ($(first afresh-late-audio 1)), its packets a's (crc $got, $want)" $ok
 }
 
-CHECKS=${*:-b19 b20 trunc chunk_trailer sidx id3 i51 i52 bad_map vod_init init_dedup init_cut headers_origin i54 cut_body vswitch conn_host cookies}
+CHECKS=${*:-b19 b20 trunc chunk_trailer sidx id3 i51 i52 bad_map vod_init init_dedup init_cut headers_origin i54 cut_body vswitch conn_host cookies status_line bad_range crlf}
 for c in $CHECKS; do "check_$(echo "$c" | tr - _)"; done
 exit $FAIL

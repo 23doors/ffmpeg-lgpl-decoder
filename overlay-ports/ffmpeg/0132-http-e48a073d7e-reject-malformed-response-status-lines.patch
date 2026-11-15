@@ -1,0 +1,102 @@
+From e48a073d7e4a7053e6f89d64e3dbb11fef41f0b0 Mon Sep 17 00:00:00 2001
+From: Romain Beauxis <romain.beauxis@gmail.com>
+Date: Sun, 23 Aug 2026 21:19:07 -0500
+Subject: [PATCH] avformat/http: reject malformed response status lines
+
+A status line carrying no HTTP version parsed as status code 0, which
+check_http_code() then accepted as a success: the body of an error reply, or of
+a reply from something that is not an HTTP server at all, was handed to the
+demuxer. strtol() was equally lenient about the code itself, accepting a sign,
+a count of digits other than three, and a value outside the range HTTP defines.
+
+Parse the grammar RFC 9112 actually specifies: a case sensitive "HTTP/"
+followed by DIGIT "." DIGIT, then exactly three digits on a whitespace
+boundary, and reject a code outside the 100-599 range of RFC 9110 section 15.
+
+A status line with no reason phrase at all, "HTTP/1.1 200", stays accepted; the
+separator RFC 9112 requires there is missing often enough in the wild.
+
+reason now points at the phrase itself rather than at the separator before it,
+so check_http_code() no longer has to skip that separator on its own.
+
+Worth noting: this invalidates several class of previously accepted
+invalid http responses, include the ICY responses class from legacy
+shoutcast servers.
+
+ICY responses are planned on being re-introduced as opt-in via the new
+libcurl HTTP stack.
+
+Pack note: The tests/ref/fate/http-status-line hunk is left out (8.1 has no
+such test). 0133 accepts the ICY status line again.
+
+(cherry picked from commit e48a073d7e4a7053e6f89d64e3dbb11fef41f0b0)
+---
+ libavformat/http.c | 39 +++++++++++++++++++++++++++------------
+ 1 file changed, 27 insertions(+), 12 deletions(-)
+
+diff --git a/libavformat/http.c b/libavformat/http.c
+index 23fa063..3ea5ebe 100644
+--- a/libavformat/http.c
++++ b/libavformat/http.c
+@@ -991,26 +991,42 @@ static int http_get_line(HTTPContext *s, char *line, int line_size)
+ 
+ int ff_http_parse_status_line(void *logctx, const char *line, HTTPStatusLine *st)
+ {
+-    const char *p = line;
+-    char *end;
++    const char *p;
+ 
+     memset(st, 0, sizeof(*st));
+ 
+-    if (av_strncasecmp(p, "HTTP/1.0", 8) == 0)
+-        st->willclose = 1;
++    if (!av_strstart(line, "HTTP/", &p) ||
++        !av_isdigit(p[0]) || p[1] != '.' || !av_isdigit(p[2]) ||
++        !av_isspace(p[3])) {
++        av_log(logctx, AV_LOG_ERROR, "Malformed HTTP status line.\n");
++        return AVERROR_INVALIDDATA;
++    }
+ 
+-    while (*p != '/' && *p != '\0')
+-        p++;
+-    while (*p == '/')
+-        p++;
+     av_strlcpy(st->version, p, sizeof(st->version));
++    st->willclose = !strcmp(st->version, "1.0");
+ 
+-    while (!av_isspace(*p) && *p != '\0')
++    p += 3;
++    while (av_isspace(*p))
+         p++;
++
++    /* RFC 9112 mandates a space after the code, but a bare "HTTP/1.1 200"
++     * is common enough in the wild to be worth accepting. */
++    if (!av_isdigit(p[0]) || !av_isdigit(p[1]) || !av_isdigit(p[2]) ||
++        (p[3] && !av_isspace(p[3]))) {
++        av_log(logctx, AV_LOG_ERROR, "Malformed HTTP status code.\n");
++        return AVERROR_INVALIDDATA;
++    }
++
++    st->code = 100 * (p[0] - '0') + 10 * (p[1] - '0') + p[2] - '0';
++    if (st->code < 100 || st->code > 599) {
++        av_log(logctx, AV_LOG_ERROR, "HTTP status code %d out of range.\n",
++               st->code);
++        return AVERROR_INVALIDDATA;
++    }
++    p += 3;
+     while (av_isspace(*p))
+         p++;
+-    st->code   = strtol(p, &end, 10);
+-    st->reason = end;
++    st->reason = p;
+ 
+     av_log(logctx, AV_LOG_TRACE, "http_code=%d\n", st->code);
+ 
+@@ -1025,7 +1041,6 @@ static int check_http_code(URLContext *h, int http_code, const char *end)
+     if (http_code >= 400 && http_code < 600 &&
+         (http_code != 401 || s->auth_state.auth_type != HTTP_AUTH_NONE) &&
+         (http_code != 407 || s->proxy_auth_state.auth_type != HTTP_AUTH_NONE)) {
+-        end += strspn(end, SPACE_CHARS);
+         av_log(h, AV_LOG_WARNING, "HTTP error %d %s\n", http_code, end);
+         return ff_http_averror(http_code, AVERROR(EIO));
+     }
