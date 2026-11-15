@@ -34,7 +34,9 @@
  * stream's packet data (crcN, the packets in order), the largest pts step
  * of stream 0, the result. Counts and CRCs cover streams 0-15 only (the
  * fixtures have up to six). The streams are listed after the open:
- * "stream <n> <type> <width>x<height>". */
+ * "stream <n> <type> <width>x<height>", each followed by "disp <n> <codec>
+ * <dispositions>" (comma-separated, "none"); the same disp lines again
+ * before the summary (as the streams are at the end). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,6 +44,21 @@
 #include <libavutil/time.h>
 #include <libavutil/opt.h>
 #include <libavutil/crc.h>
+
+static void print_disp(const AVStream *st)
+{
+    int any = 0;
+    printf("disp %d %s ", st->index, avcodec_get_name(st->codecpar->codec_id));
+    for (int b = 0; b < 32; b++) {
+        const char *name = st->disposition & (1 << b) ?
+                           av_disposition_to_string(st->disposition & (1 << b)) : NULL;
+        if (name) {
+            printf("%s%s", any ? "," : "", name);
+            any = 1;
+        }
+    }
+    printf("%s\n", any ? "" : "none");
+}
 
 static int64_t t0, last_pkt, int_until;
 
@@ -217,6 +234,7 @@ int main(int argc, char **argv)
         AVCodecParameters *par = s->streams[i]->codecpar;
         printf("stream %d %s %dx%d\n", i, av_get_media_type_string(par->codec_type) ?
                av_get_media_type_string(par->codec_type) : "unknown", par->width, par->height);
+        print_disp(s->streams[i]);
         if (late && i < 16 && discard[i])
             s->streams[i]->discard = AVDISCARD_ALL;
     }
@@ -317,6 +335,8 @@ int main(int argc, char **argv)
         }
         av_packet_unref(pkt);
     }
+    for (int i = 0; i < (int)s->nb_streams; i++)
+        print_disp(s->streams[i]);
     printf("summary: exits=%d groups=%d", exits, epoch);
     for (int i = 0; i < (int)s->nb_streams && i < 16; i++)
         printf(" s%d=%d", i, n[i]);

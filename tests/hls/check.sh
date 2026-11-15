@@ -714,6 +714,17 @@ near() {
     d=$(first "$1" "$2" | cut -d' ' -f2)
     awk -v d="$d" -v lo="$3" -v hi="$4" 'BEGIN { exit !(d != "" && d + 0 >= lo && d + 0 <= hi) }'
 }
+check_disp() { # 0151 (3ed7bc6580): a stream's rendition dispositions survive its update
+    # the DEFAULT=YES audio rendition's codec changes in its fourth segment
+    # (a new PMT: AC-3): hls copied the new stream's parameters and replaced
+    # the dispositions from EXT-X-MEDIA with the subdemuxer's (none)
+    run disp "" /mv/disp.m3u8 -q -maxtime 10
+    at_open=$(grep '^disp 0 ' "$OUT/disp.log" | head -1)
+    at_end=$(grep '^disp 0 ' "$OUT/disp.log" | tail -1)
+    [ "$at_open" = "disp 0 aac default" ] && [ "$at_end" = "disp 0 ac3 default" ]
+    result disp "the audio rendition's DEFAULT kept after its codec changed ($at_open; $at_end)" $?
+}
+
 check_vswitch() { # 0113-0116: a video playlist needed anew starts at its segment's keyframe
     # media/mv: 6 s segments, a 6 s GOP; the timeline's segment 2 starts at
     # 13.48 (the video keyframe's PTS; its DTS is 13.40). At 16.12 a player
@@ -851,6 +862,6 @@ check_vswitch() { # 0113-0116: a video playlist needed anew starts at its segmen
     result afresh-late-audio "late discards, a -> a2 during playback: a2 at the position ($(first afresh-late-audio 1)), its packets a's (crc $got, $want)" $ok
 }
 
-CHECKS=${*:-b19 b20 trunc chunk_trailer sidx id3 i51 i52 bad_map vod_init init_dedup init_cut headers_origin i54 cut_body vswitch conn_host cookies status_line bad_range crlf http_reply}
+CHECKS=${*:-b19 b20 trunc chunk_trailer sidx id3 i51 i52 bad_map vod_init init_dedup init_cut headers_origin i54 cut_body vswitch disp conn_host cookies status_line bad_range crlf http_reply}
 for c in $CHECKS; do "check_$(echo "$c" | tr - _)"; done
 exit $FAIL

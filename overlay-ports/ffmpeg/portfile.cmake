@@ -131,6 +131,8 @@ vcpkg_from_github(
         0148-http-8e9ce80c62-check-every-reply-against-the-requeste.patch
         0149-http-461f48ece8-stop-at-the-end-offset-or-the-end-of-t.patch
         0150-http-aebc956a22-free-the-zlib-state-when-the-open-fail.patch
+        # Upstream FFmpeg master's hls.c fixes since 8.1.3, not in release/8.1.
+        0151-hls-3ed7bc6580-keep-the-rendition-dispositions-when-a-.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

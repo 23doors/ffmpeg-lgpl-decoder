@@ -67,6 +67,9 @@ Paths:
                     GOP: video-only variants v1 (320x240) and v2 (480x360), and two
                     audio renditions a and a2 (the same media under two addresses)
   /mv/mux.m3u8      the same with muxed variants m1 and m2 (video and audio in one TS)
+  /mv/disp.m3u8     v1 with one audio rendition (DEFAULT=YES), a81: a's segments, from
+                    s3 on with the PMT's audio stream type 0x81 (AC-3): the codec
+                    changes mid-stream, as at an ad break
   /mv/nokey.m3u8    v1 and n1 (480x360, no keyframe after its first) with the audio a
   /mv/fmp4.m3u8     the video-only variants in fMP4 (f1, f2, EXT-X-MAP) with the audio a
   /mv/NAME/...      the media playlists, init sections and segments of v1, v2, m1, m2, n1,
@@ -190,6 +193,44 @@ def id3_timestamp(ts):
         return bytes([(n >> 21) & 0x7F, (n >> 14) & 0x7F, (n >> 7) & 0x7F, n & 0x7F])
     frame = b"PRIV" + syncsafe(len(data)) + b"\0\0" + data
     return b"ID3\x04\0\0" + syncsafe(len(frame)) + frame
+
+
+def crc32_mpeg2(data):
+    crc = 0xFFFFFFFF
+    for b in data:
+        crc ^= b << 24
+        for _ in range(8):
+            crc = (crc << 1) ^ 0x04C11DB7 if crc & 0x80000000 else crc << 1
+        crc &= 0xFFFFFFFF
+    return crc
+
+
+def pmt_type(ts, old_type, new_type):
+    # the transport stream with its PMT's elementary stream type old_type
+    # set to new_type (one-packet sections, as ffmpeg's muxer writes them)
+    out = bytearray(ts)
+    pmt_pids = set()
+    for i in range(0, len(out) - 187, 188):
+        p = out[i:i + 188]
+        pid = ((p[1] & 0x1F) << 8) | p[2]
+        if not p[1] & 0x40:
+            continue
+        off = 4 + (p[4] + 1 if p[3] & 0x20 else 0)
+        off += 1 + p[off]                       # pointer field
+        if pid == 0:
+            n = ((p[off + 1] & 0x0F) << 8) | p[off + 2]
+            for k in range(off + 8, off + 3 + n - 4, 4):
+                pmt_pids.add(((p[k + 2] & 0x1F) << 8) | p[k + 3])
+        elif pid in pmt_pids:
+            n = ((p[off + 1] & 0x0F) << 8) | p[off + 2]
+            end = off + 3 + n - 4
+            k = off + 12 + (((p[off + 10] & 0x0F) << 8) | p[off + 11])
+            while k < end:
+                if out[i + k] == old_type:
+                    out[i + k] = new_type
+                k += 5 + (((p[k + 3] & 0x0F) << 8) | p[k + 4])
+            out[i + end:i + end + 4] = crc32_mpeg2(bytes(out[i + off:i + end])).to_bytes(4, "big")
+    return bytes(out)
 
 
 def vod_playlist(seg, n=20, head=""):
@@ -482,6 +523,18 @@ class H(BaseHTTPRequestHandler):
                   '#EXT-X-STREAM-INF:BANDWIDTH=400000,RESOLUTION=320x240,CODECS="avc1.64000d,mp4a.40.2",AUDIO="aud"\nv1/index.m3u8\n'
                   '#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=480x360,CODECS="avc1.64001e,mp4a.40.2",AUDIO="aud"\nv2/index.m3u8\n')
             return self.send(200, pl.encode(), mpegurl)
+        if p == "/mv/disp.m3u8":
+            pl = ('#EXTM3U\n'
+                  '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="one",LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES,URI="a81/index.m3u8"\n'
+                  '#EXT-X-STREAM-INF:BANDWIDTH=400000,RESOLUTION=320x240,AUDIO="aud"\nv1/index.m3u8\n')
+            return self.send(200, pl.encode(), mpegurl)
+        if p.startswith("/mv/a81/s") and p.endswith(".ts"):
+            path = os.path.join(D, "mv", "a", p[len("/mv/a81/"):])
+            if os.path.isfile(path):
+                body = open(path, "rb").read()
+                if int(p[len("/mv/a81/s"):-3]) >= 3:
+                    body = pmt_type(body, 0x0F, 0x81)
+                return self.send(200, body, "video/mp2t")
         if p == "/mv/mux.m3u8":
             pl = ('#EXTM3U\n'
                   '#EXT-X-STREAM-INF:BANDWIDTH=400000,RESOLUTION=320x240\nm1/index.m3u8\n'
@@ -515,6 +568,8 @@ class H(BaseHTTPRequestHandler):
         if p.startswith("/mv/"):
             name, f = p[len("/mv/"):].split("/", 1)
             if name == "a2":
+                name = "a"
+            if name == "a81":
                 name = "a"
             if name in ("v1", "v2", "m1", "m2", "n1", "f1", "f2", "a") and f.replace(".", "").isalnum():
                 path = os.path.join(D, "mv", name, f)
