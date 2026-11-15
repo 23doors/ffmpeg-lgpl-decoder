@@ -34,6 +34,7 @@ Paths:
   /id3/index.m3u8   audio-only ADTS, 1 s segments a0..a9, each led by an ID3 PRIV
                     timestamp (the HLS packed audio rule); a5's alone is 100 s on
   /live/index.m3u8  live TS, window of 6, 1 s target, started when the server started
+  /live/master.m3u8 two variants of it: index.m3u8 and b/index.m3u8 (the same media)
   /livefmp4/index.m3u8  live fMP4 with EXT-X-MAP init.mp4
   /vtt/subs.m3u8    VOD WebVTT segments ending in a newline, none or a blank line
   /long/index.m3u8  VOD TS with a long first segment URL
@@ -251,6 +252,12 @@ class H(BaseHTTPRequestHandler):
     def route(self, p):
         global init_requests
         mpegurl = "application/vnd.apple.mpegurl"
+        if p == "/live/master.m3u8":
+            return self.send(200, b"#EXTM3U\n"
+                             b"#EXT-X-STREAM-INF:BANDWIDTH=400000,RESOLUTION=320x240\nindex.m3u8\n"
+                             b"#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=320x240\nb/index.m3u8\n", mpegurl)
+        if p.startswith("/live/b/"):
+            p = "/live/" + p[len("/live/b/"):]
         if p == "/vod/index.m3u8":
             return self.send(200, vod_playlist("s%d.ts"), mpegurl)
         if p == "/vodfmp4/index.m3u8":

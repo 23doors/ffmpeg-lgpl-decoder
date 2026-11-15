@@ -1,5 +1,5 @@
 #!/bin/sh
-# The fixture checks of patches 0098-0114 (and the I54 trace) against a
+# The fixture checks of patches 0098-0116 (and the I54 trace) against a
 # harness built by setup.sh. Each check prints PASS or FAIL; the exit status
 # is the number of failures. With the series only up to 0097
 # (setup.sh WORKDIR 0097) all fail but xo-ipv6 (without 0104 the headers go
@@ -11,7 +11,9 @@
 # series up to 0112 the vswitch checks fail but kf-nokey; up to 0113, the
 # ones that need a playlist read afresh when it is needed again (0114:
 # kf-switch-fmp4, afresh-audio, kf-late-switch, kf-late-switch-fmp4,
-# afresh-late-audio).
+# afresh-late-audio, live-switch, live-switch-late) and init-seek; up to
+# 0114, the ones that count init section requests (0115: kf-switch-fmp4,
+# init-seek, kf-late-switch-fmp4) and live-switch, live-switch-late (0116).
 #
 # usage: tests/hls/check.sh WORKDIR [CHECK...]
 #   checks: b19 b20 trunc chunk-trailer sidx id3 i51 i52 init-dedup init-cut
@@ -328,8 +330,16 @@ check_cut_body() { # 0107: a cut body from a server without ranges is not read a
 }
 
 # vswitch's helpers. first NAME STREAM: "pts dts key=K" of the stream's first
-# packet after the events
-first() { grep "^first [0-9]* $2 " "$OUT/$1.log" | head -1 | cut -d' ' -f4-; }
+# packet after the last events (hlsread numbers the groups of events that
+# fire together: crcaN covers the packets after the last group too)
+first() {
+    e=$(sed -n 's/^first \([0-9]*\) .*/\1/p' "$OUT/$1.log" | sort -n | tail -1)
+    [ -n "$e" ] && grep "^first $e $2 " "$OUT/$1.log" | head -1 | cut -d' ' -f4-
+}
+# evdts NAME: the dts of the packet the (last) events fired at, the position
+evdts() { sed -n 's/^event [0-9]* at [0-9.-]* dts \([0-9.-]*\):.*/\1/p' "$OUT/$1.log" | tail -1; }
+# gets NAME PATH: how many times the server was asked for PATH
+gets() { grep -c "GET $2 " "$OUT/$1.server.log"; }
 # keyed NAME STREAM REF REFSTREAM: the stream's first packet after the events
 # is a keyframe, and its packets from there are those of the variant's own
 # playlist read alone after a keyed seek to the same segment (byte for byte)
@@ -353,7 +363,7 @@ check_vswitch() { # 0113, 0114: a video playlist needed anew starts at its segme
     # Before 0113 the new video started on the P-frames at the position
     # (its playlist's catch-up was AVSEEK_FLAG_ANY), or after the keyframe
     # at 13.40 that the seek's cutoff at 13.48 dropped.
-    for v in v1 v2 m2 f2; do
+    for v in v1 v2 m2 f1 f2; do
         run "kf-ref-$v" "" "/mv/$v/index.m3u8" -q -ev 1.6:seek:16:0
     done
     # a seek on the audio stream: the video playlist is not the seek playlist
@@ -378,10 +388,18 @@ check_vswitch() { # 0113, 0114: a video playlist needed anew starts at its segme
     result kf-switch "v1 -> v2 during playback: v2 from its segment's keyframe ($(first kf-switch 3))" $ok
     # the same in fMP4 (0114: stock read the probe's stale bytes, and the new
     # variant gave no packet at all)
+    # (0115: f2's init section, buffered since the open, is served again,
+    # not asked for a second time)
     run kf-switch-fmp4 "" /mv/fmp4.m3u8 -q -discard 2 -ev 16:off:1 -ev 16:on:2
-    keyed kf-switch-fmp4 2 kf-ref-f2 0
+    keyed kf-switch-fmp4 2 kf-ref-f2 0 && [ "$(gets kf-switch-fmp4 /mv/f2/init.mp4)" = 1 ]
     ok=$?
-    result kf-switch-fmp4 "f1 -> f2 (fMP4) during playback: f2 from its segment's keyframe ($(first kf-switch-fmp4 2))" $ok
+    result kf-switch-fmp4 "f1 -> f2 (fMP4) during playback: f2 from its segment's keyframe ($(first kf-switch-fmp4 2)), its init section asked for once ($(gets kf-switch-fmp4 /mv/f2/init.mp4))" $ok
+    # 0115: a seek serves the buffered init section again (stock asked for
+    # it again on every seek)
+    run init-seek "" /mv/fmp4.m3u8 -q -discard 2 -ev 16:seek:16:1
+    keyed init-seek 1 kf-ref-f1 0 && [ "$(gets init-seek /mv/f1/init.mp4)" = 1 ]
+    ok=$?
+    result init-seek "a seek on fMP4: f1 from its segment's keyframe ($(first init-seek 1)), its init section asked for once ($(gets init-seek /mv/f1/init.mp4))" $ok
     # muxed variants (streams 0 m1 video, 1 m1 audio, 2 m2 video, 3 m2
     # audio): the video from its keyframe, the audio still at the position
     # (not a segment back), and none of the stale probe data (0114)
@@ -406,6 +424,30 @@ check_vswitch() { # 0113, 0114: a video playlist needed anew starts at its segme
         ! grep -q 'hls.*Packet corrupt (stream = 1,' "$OUT/afresh-audio.log"
     ok=$?
     result afresh-audio "a -> a2 during playback: a2 at the position ($(first afresh-audio 1)), its packets a's (crc $got, $want)" $ok
+    # the first segment (idx 0: the cutoff a segment before the playlist's
+    # start): a switch and a seek to 2 s give v2 from its first keyframe
+    run kf-ref0-v2 "" /mv/v2/index.m3u8 -q -ev 3:seek:2:0
+    run kf-first-seg "" /mv/master.m3u8 -q -discard 1 -discard 3 -ev 3:off:2 -ev 3:on:3 -ev 3:seek:2:3
+    keyed kf-first-seg 3 kf-ref0-v2 0 && near kf-first-seg 3 1.3 1.5
+    ok=$?
+    result kf-first-seg "v1 -> v2 and a seek to 2 s: v2 from the first segment's keyframe ($(first kf-first-seg 3))" $ok
+    # live (/live/master.m3u8: two variants of the live TS, 1 s segments,
+    # 0 video 1 audio, 2 video 3 audio), switched 7.5 s after the first
+    # packet, no seek: the new variant's video starts at the position, as
+    # stock's AVSEEK_FLAG_ANY catch-up does (0113 leaves live playlists
+    # alone; it would start at the segment's keyframe, up to a segment
+    # early), in both orders of the discards. 0116: the catch-up no longer
+    # ended at the rest of an audio PES it had dropped (the video came up to
+    # 0.5 s before the position); 0114: no stale probe data first
+    for late in "" -late; do
+        name=live-switch$late
+        run $name "" /live/master.m3u8 -q -maxtime 16 $late -discard 2 -discard 3 \
+            -ev +7.5:off:0 -ev +7.5:off:1 -ev +7.5:on:2 -ev +7.5:on:3
+        pos=$(evdts $name)
+        near $name 2 "$(awk -v p="$pos" 'BEGIN { print p - 0.05 }')" "$(awk -v p="$pos" 'BEGIN { print p + 0.6 }')"
+        ok=$?
+        result $name "live${late:+ (late discards)}, variant switch at $pos: the new video at the position ($(first $name 2))" $ok
+    done
     # RMP's order: avformat_find_stream_info() with every stream, the
     # discards after it (-late). hls reads the discarded playlists on until
     # they need a segment, and drops them there with that segment's early
@@ -421,9 +463,9 @@ check_vswitch() { # 0113, 0114: a video playlist needed anew starts at its segme
     ok=$?
     result kf-late-switch "late discards, v1 -> v2 during playback: v2 from its segment's keyframe ($(first kf-late-switch 3))" $ok
     run kf-late-switch-fmp4 "" /mv/fmp4.m3u8 -q -late -discard 2 -ev 16:off:1 -ev 16:on:2
-    keyed kf-late-switch-fmp4 2 kf-ref-f2 0
+    keyed kf-late-switch-fmp4 2 kf-ref-f2 0 && [ "$(gets kf-late-switch-fmp4 /mv/f2/init.mp4)" = 1 ]
     ok=$?
-    result kf-late-switch-fmp4 "late discards, f1 -> f2 (fMP4) during playback: f2 from its segment's keyframe ($(first kf-late-switch-fmp4 2))" $ok
+    result kf-late-switch-fmp4 "late discards, f1 -> f2 (fMP4) during playback: f2 from its segment's keyframe ($(first kf-late-switch-fmp4 2)), its init section asked for once ($(gets kf-late-switch-fmp4 /mv/f2/init.mp4))" $ok
     run afresh-late-ref "" /mv/master.m3u8 -q -late -discard 1 -discard 3 -ev 16:off:3
     run afresh-late-audio "" /mv/master.m3u8 -q -late -discard 1 -discard 3 -ev 16:off:0 -ev 16:on:1
     want=$(field afresh-late-ref crca0); got=$(field afresh-late-audio crca1)
