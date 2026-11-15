@@ -1,4 +1,4 @@
-crypto: an interrupt in the inner read is no end of the input
+crypto: an interrupt or an error in the inner read is no end of the input
 
 crypto_read() took every inner read that returned nothing or an error for
 the end of the encrypted input: it set eof, decrypted the last block it
@@ -9,18 +9,22 @@ unencrypted segment on after an interrupt, an encrypted one lost the rest.
 
 Return AVERROR_EXIT as it is. Nothing was taken from the inner input, and
 what was read before stays in the input buffer, so the next read goes on
-from there. Other errors and the end of the input are handled as before.
+from there. So is every other error (a body cut short, which 0107 ends
+in EIO): it was taken for the end too, the cut segment's last block
+"unpadded" from ciphertext and played with no error logged. Only the end
+of the input (a read of 0, AVERROR_EOF) ends it.
 
 diff --git a/libavformat/crypto.c b/libavformat/crypto.c
 --- a/libavformat/crypto.c
 +++ b/libavformat/crypto.c
-@@ -199,6 +199,10 @@ retry:
+@@ -199,6 +199,11 @@ retry:
      while (c->indata - c->indata_used < 2*BLOCKSIZE) {
          int n = ffurl_read(c->hd, c->inbuffer + c->indata,
                             sizeof(c->inbuffer) - c->indata);
-+        /* The caller's interrupt callback is no end: what was read stays in
-+         * inbuffer, and the next read goes on from there. */
-+        if (n == AVERROR_EXIT)
++        /* The caller's interrupt callback is no end, nor is an error (a cut
++         * body, 0107): what was read stays in inbuffer, an interrupted read
++         * goes on from there on the next call. */
++        if (n < 0 && n != AVERROR_EOF)
 +            return n;
          if (n <= 0) {
              c->eof = 1;
