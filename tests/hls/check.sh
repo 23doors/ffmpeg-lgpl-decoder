@@ -9,8 +9,9 @@
 # 0110 without 0112 fail it; a seekable fragmented MP4 reads with no extra
 # request; a video without keyframes starts at the position). With the
 # series up to 0112 the vswitch checks fail but kf-nokey; up to 0113, the
-# two that need a playlist read afresh when it is needed again (0114:
-# kf-switch-fmp4, afresh-audio).
+# ones that need a playlist read afresh when it is needed again (0114:
+# kf-switch-fmp4, afresh-audio, kf-late-switch, kf-late-switch-fmp4,
+# afresh-late-audio).
 #
 # usage: tests/hls/check.sh WORKDIR [CHECK...]
 #   checks: b19 b20 trunc chunk-trailer sidx id3 i51 i52 init-dedup init-cut
@@ -405,6 +406,30 @@ check_vswitch() { # 0113, 0114: a video playlist needed anew starts at its segme
         ! grep -q 'hls.*Packet corrupt (stream = 1,' "$OUT/afresh-audio.log"
     ok=$?
     result afresh-audio "a -> a2 during playback: a2 at the position ($(first afresh-audio 1)), its packets a's (crc $got, $want)" $ok
+    # RMP's order: avformat_find_stream_info() with every stream, the
+    # discards after it (-late). hls reads the discarded playlists on until
+    # they need a segment, and drops them there with that segment's early
+    # open pending; before 0114 that connection was read in place of the
+    # segment due when the playlist was needed again, and the next segments
+    # were never asked for (the new video and audio came at 25.4 s)
+    run kf-late-switch-seek "" /mv/master.m3u8 -q -late -discard 1 -discard 3 -ev 16:off:2 -ev 16:on:3 -ev 16:seek:16:3
+    keyed kf-late-switch-seek 3 kf-ref-v2 0 && near kf-late-switch-seek 3 13.3 13.5
+    ok=$?
+    result kf-late-switch-seek "late discards, v1 -> v2 and a seek on v2: v2 from its segment's keyframe ($(first kf-late-switch-seek 3))" $ok
+    run kf-late-switch "" /mv/master.m3u8 -q -late -discard 1 -discard 3 -ev 16:off:2 -ev 16:on:3
+    keyed kf-late-switch 3 kf-ref-v2 0 && near kf-late-switch 3 13.3 13.5
+    ok=$?
+    result kf-late-switch "late discards, v1 -> v2 during playback: v2 from its segment's keyframe ($(first kf-late-switch 3))" $ok
+    run kf-late-switch-fmp4 "" /mv/fmp4.m3u8 -q -late -discard 2 -ev 16:off:1 -ev 16:on:2
+    keyed kf-late-switch-fmp4 2 kf-ref-f2 0
+    ok=$?
+    result kf-late-switch-fmp4 "late discards, f1 -> f2 (fMP4) during playback: f2 from its segment's keyframe ($(first kf-late-switch-fmp4 2))" $ok
+    run afresh-late-ref "" /mv/master.m3u8 -q -late -discard 1 -discard 3 -ev 16:off:3
+    run afresh-late-audio "" /mv/master.m3u8 -q -late -discard 1 -discard 3 -ev 16:off:0 -ev 16:on:1
+    want=$(field afresh-late-ref crca0); got=$(field afresh-late-audio crca1)
+    [ -n "$want" ] && [ "$got" = "$want" ] && near afresh-late-audio 1 15.8 16.3
+    ok=$?
+    result afresh-late-audio "late discards, a -> a2 during playback: a2 at the position ($(first afresh-late-audio 1)), its packets a's (crc $got, $want)" $ok
 }
 
 CHECKS=${*:-b19 b20 trunc chunk_trailer sidx id3 i51 i52 init_dedup init_cut headers_origin i54 cut_body vswitch}

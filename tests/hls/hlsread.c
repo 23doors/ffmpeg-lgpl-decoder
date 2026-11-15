@@ -12,6 +12,9 @@
  *   -discard N    stream N discarded from the start (AVDISCARD_ALL, set
  *                 before the first read, as a player that picks its tracks
  *                 at the open: hls stops reading the playlists of none)
+ *   -late         the -discard streams discarded after
+ *                 avformat_find_stream_info() instead (RMP's order: hls
+ *                 reads on the playlists of the discarded streams too)
  *   -ev PTS:CMD   at the first packet at or past PTS seconds (after the
  *                 events before it), as a player's track switch or seek:
  *                 off:N / on:N discards stream N or takes it again;
@@ -127,7 +130,7 @@ int main(int argc, char **argv)
     double maxtime = 60;
     int quiet = 0, nofsi = 0, ret, n[16] = { 0 }, exits = 0;
     uint32_t crc[16] = { 0 }, crca[16] = { 0 };
-    int discard[16] = { 0 }, seen[16] = { 0 }, epoch = 0;
+    int discard[16] = { 0 }, seen[16] = { 0 }, epoch = 0, late = 0;
     const AVCRC *crc_table = av_crc_get_table(AV_CRC_32_IEEE_LE);
     double prev0 = -1, maxstep0 = 0;
     const char *url = argv[1];
@@ -155,6 +158,8 @@ int main(int argc, char **argv)
             int k = atoi(argv[++i]);
             if (k >= 0 && k < 16)
                 discard[k] = 1;
+        } else if (!strcmp(argv[i], "-late")) {
+            late = 1;
         } else if (!strcmp(argv[i], "-ev") && i + 1 < argc && n_ev < 16) {
             char *a = argv[++i], *c = strchr(a, ':');
             if (!c || sscanf(c + 1, "%7[a-z]", ev[n_ev].cmd) != 1) {
@@ -184,7 +189,7 @@ int main(int argc, char **argv)
         printf("open failed: %s\n", av_err2str(ret));
         return 1;
     }
-    for (int i = 0; i < (int)s->nb_streams && i < 16; i++)
+    for (int i = 0; i < (int)s->nb_streams && i < 16 && !late; i++)
         if (discard[i])
             s->streams[i]->discard = AVDISCARD_ALL;
     {
@@ -199,6 +204,8 @@ int main(int argc, char **argv)
         AVCodecParameters *par = s->streams[i]->codecpar;
         printf("stream %d %s %dx%d\n", i, av_get_media_type_string(par->codec_type) ?
                av_get_media_type_string(par->codec_type) : "unknown", par->width, par->height);
+        if (late && i < 16 && discard[i])
+            s->streams[i]->discard = AVDISCARD_ALL;
     }
     while (1) {
         double now = (av_gettime_relative() - t0) / 1e6;
