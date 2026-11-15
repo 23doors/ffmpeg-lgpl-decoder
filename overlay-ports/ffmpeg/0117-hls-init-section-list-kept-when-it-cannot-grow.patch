@@ -1,25 +1,86 @@
-hls: an init section the list cannot take is freed, the list kept
+hls: an init section the list cannot take is freed, the list kept; its errors told apart
 
 new_init_section() added the section with dynarray_add(), which, when it
-cannot grow the list, frees the list, sets its count to 0 and returns
-nothing: the section was returned all the same, not in the list, and
-the sections listed before leaked. Its callers that then drop the
-section just added (an EXT-X-MAP key address that is invalid or could
-not be copied, and 0103's dedup_init_section()) took the element before
-the start of the freed list, a read out of bounds and a free of
-whatever pointer it held.
+cannot grow the list, frees the list, sets it to NULL and its count to 0,
+and returns nothing: the section was returned all the same, not in the
+list, and the sections listed before leaked. Its callers that then drop
+the section just added (an EXT-X-MAP key address that is invalid or
+could not be copied, and 0103's dedup_init_section()) read
+init_sections[-1] of that NULL list: a crash at address -8.
 
 Add it with av_dynarray_add_nofree() and check it: on failure the list
-is kept, the section is freed and new_init_section() returns NULL,
-which its caller reports as ENOMEM. drop_last_init_section() leaves an
-empty list alone; it is only called after a section was added, and a
-broken invariant should not abort the process playing the stream (an
+is kept and the section freed. drop_last_init_section() leaves an empty
+list alone; it is only called after a section was added, and a broken
+invariant should not abort the process playing the stream (an
 av_assert0) nor index the list.
+
+new_init_section() returned NULL for an EXT-X-MAP without a URI, with an
+address that does not resolve or with an invalid BYTERANGE as for a
+failed allocation, and the caller reported them all as ENOMEM. Under
+0102 a local error fails a live playlist at once, while a garbled answer
+is played through for live_reload_timeout: one garbled EXT-X-MAP on a
+reload ended the playlist. It now returns AVERROR_INVALIDDATA for those
+and AVERROR(ENOMEM) only for a failed allocation, which, on a live
+reload, still fails the playlist at once (it used to play on with a
+leaked section, or crash as above).
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -615,16 +615,28 @@ static struct segment *new_init_section(struct playlist *pls,
+@@ -571,19 +571,23 @@ struct init_section_info {
+     char byterange[32];
+ };
+ 
+-static struct segment *new_init_section(struct playlist *pls,
+-                                        struct init_section_info *info,
+-                                        const char *url_base)
++/* *psec: the section added to the playlist's list. An EXT-X-MAP that names
++ * no valid section is the answer's error, AVERROR_INVALIDDATA, which a live
++ * reload plays through (0102); AVERROR(ENOMEM) is for an allocation that
++ * failed, a local error that fails the playlist. */
++static int new_init_section(struct playlist *pls,
++                            struct init_section_info *info,
++                            const char *url_base, struct segment **psec)
+ {
+     struct segment *sec;
+     char tmp_str[MAX_URL_SIZE], *ptr = tmp_str;
+ 
+     if (!info->uri[0])
+-        return NULL;
++        return AVERROR_INVALIDDATA;
+ 
+     sec = av_mallocz(sizeof(*sec));
+     if (!sec)
+-        return NULL;
++        return AVERROR(ENOMEM);
+ 
+     if (!av_strncasecmp(info->uri, "data:", 5)) {
+         ptr = info->uri;
+@@ -591,13 +595,13 @@ static struct segment *new_init_section(struct playlist *pls,
+         ff_make_absolute_url(tmp_str, sizeof(tmp_str), url_base, info->uri);
+         if (!tmp_str[0]) {
+             av_free(sec);
+-            return NULL;
++            return AVERROR_INVALIDDATA;
+         }
+     }
+     sec->url = av_strdup(ptr);
+     if (!sec->url) {
+         av_free(sec);
+-        return NULL;
++        return AVERROR(ENOMEM);
+     }
+ 
+     if (info->byterange[0]) {
+@@ -608,23 +612,36 @@ static struct segment *new_init_section(struct playlist *pls,
+         if (sec->size < 0 || sec->url_offset < 0 || sec->size > INT64_MAX - sec->url_offset) {
+             av_freep(&sec->url);
+             av_free(sec);
+-            return NULL;
++            return AVERROR_INVALIDDATA;
+         }
+     } else {
+         /* the entire file is the init section */
          sec->size = -1;
      }
  
@@ -30,10 +91,12 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
 +    if (av_dynarray_add_nofree(&pls->init_sections, &pls->n_init_sections, sec) < 0) {
 +        av_freep(&sec->url);
 +        av_free(sec);
-+        return NULL;
++        return AVERROR(ENOMEM);
 +    }
  
-     return sec;
+-    return sec;
++    *psec = sec;
++    return 0;
  }
  
  /* The section just added, which the playlist's list holds and frees, is
@@ -51,3 +114,17 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
  
      av_freep(&sec->key);
      av_freep(&sec->url);
+@@ -1259,11 +1276,9 @@ static int parse_playlist(HLSContext *c, const char *url,
+             if (ret < 0)
+                 goto fail;
+             ff_parse_key_value(ptr, handle_init_section_args, &info);
+-            cur_init_section = new_init_section(pls, &info, url);
+-            if (!cur_init_section) {
+-                ret = AVERROR(ENOMEM);
++            ret = new_init_section(pls, &info, url, &cur_init_section);
++            if (ret < 0)
+                 goto fail;
+-            }
+             cur_init_section->key_type = key_type;
+             if (has_iv) {
+                 memcpy(cur_init_section->iv, iv, sizeof(iv));
