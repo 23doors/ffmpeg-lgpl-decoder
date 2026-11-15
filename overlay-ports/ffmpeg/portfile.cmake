@@ -80,6 +80,7 @@ vcpkg_from_github(
         0106-http-chunk-size-line-kept-across-interrupt.patch
         0107-http-streamed-body-not-restarted.patch
         0108-mov-interrupted-sample-read-again.patch
+        0109-hls-cut-init-section-not-stored.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

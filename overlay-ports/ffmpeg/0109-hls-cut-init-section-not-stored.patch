@@ -1,0 +1,43 @@
+hls: an initialization section read that fails part way is no section
+
+update_init_section() took what read_from_url() returned for the whole
+section. avio_read() returns the bytes it read when a later read of the
+section fails (an interrupt, a connection cut with 0107's EIO), the error
+stays in the input's context, so a cut section was stored as complete:
+a truncated moov went to the subdemuxer, which failed to open, and the
+playlist was lost rather than one segment.
+
+Take the input's error before it is closed and return it when the read
+ended in one: the section is not stored, AVERROR_EXIT is returned as it
+is and the section is asked for again on the next call, another error
+fails its segment as a failed request for the section does (0101). The
+end of the section (EOF) is no error.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -1884,7 +1884,7 @@ static int update_init_section(struct playlist *pls, struct segment *seg)
+     HLSContext *c = pls->parent->priv_data;
+     int64_t sec_size;
+     int64_t urlsize;
+-    int ret;
++    int ret, err;
+ 
+     if (seg->init_section == pls->cur_init_section)
+         return 0;
+@@ -1919,10 +1919,15 @@ static int update_init_section(struct playlist *pls, struct segment *seg)
+ 
+     ret = read_from_url(pls, seg->init_section, pls->init_sec_buf,
+                         pls->init_sec_buf_size);
++    /* a read that ended in an error (not the section's end) is no section */
++    err = pls->input->error;
+     ff_format_io_close(pls->parent, &pls->input);
+ 
+     if (ret < 0)
+         return ret;
++    /* AVERROR_EXIT: the section is asked for again on the next call (0101) */
++    if (err < 0)
++        return err;
+ 
+     pls->cur_init_section = seg->init_section;
+     pls->init_sec_data_len = ret;
