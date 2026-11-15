@@ -86,6 +86,7 @@ vcpkg_from_github(
         0112-hls-interrupt-latch-cleared-at-the-end.patch
         0113-hls-new-video-playlist-from-segment-keyframe.patch
         0114-hls-playlist-needed-again-read-afresh.patch
+        0115-hls-buffered-init-section-served-again.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

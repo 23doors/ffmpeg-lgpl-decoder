@@ -1,0 +1,52 @@
+hls: an init section still buffered is served again, not fetched again
+
+A seek, and since 0114 a playlist needed again, set cur_init_section to
+NULL, so the next segment's update_init_section() fetched the init
+section again although init_sec_buf still held what the first fetch
+read (a fetch that failed leaves cur_init_section NULL): an extra
+request per seek, and per track switch, on every fMP4 stream.
+
+Rewind the buffered one instead: the next segment that maps it serves it
+from init_sec_buf; one that maps another section fetches that one as
+before.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -1950,6 +1950,16 @@ static int update_init_section(struct playlist *pls, struct segment *seg)
+     return 0;
+ }
+ 
++/* Serve the init section again before the next segment, when reading
++ * starts anew (a seek, a playlist needed again). The one init_sec_buf holds
++ * whole is served from there when the segment maps it (update_init_section()
++ * keeps it): fetching it again cost a request per seek on fMP4. */
++static void restart_init_section(struct playlist *pls)
++{
++    if (pls->cur_init_section)
++        pls->init_sec_buf_read_offset = 0;
++}
++
+ static int64_t default_reload_interval(struct playlist *pls)
+ {
+     return pls->n_segments > 0 ?
+@@ -3498,7 +3508,7 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+                     for (unsigned j = 0; j < pls->ctx->nb_streams; j++)
+                         ffstream(pls->ctx->streams[j])->pts_wrap_reference = AV_NOPTS_VALUE;
+                 }
+-                pls->cur_init_section = NULL;
++                restart_init_section(pls);
+             }
+             pls->cur_seq_no = select_cur_seq_no(c, pls);
+             pls->first_read_seq_no = -1;
+@@ -4167,8 +4177,8 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+             free_subtitle_cues(pls);
+         }
+ 
+-        /* Reset the init segment so it's re-fetched and served appropriately */
+-        pls->cur_init_section = NULL;
++        /* The init segment is served again before the next segment */
++        restart_init_section(pls);
+         pls->segment_boundary = 0;
+         pls->catchup_ts = AV_NOPTS_VALUE;
+ 
