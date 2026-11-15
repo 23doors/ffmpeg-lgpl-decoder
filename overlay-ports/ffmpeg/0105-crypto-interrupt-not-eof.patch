@@ -1,18 +1,20 @@
 crypto: an interrupt or an error in the inner read is no end of the input
 
 crypto_read() took every inner read that returned nothing or an error for
-the end of the encrypted input: it set eof, decrypted the last block it
-held as the final one (taking it for PKCS7 padding) and ended. When the
-caller's interrupt callback stops the inner http read (AVERROR_EXIT), an
-AES-128 segment of hls ended there, its last block mangled: 0099 reads an
+the end of the encrypted input: it set eof, decrypted what it held as the
+input's last data and took the last plaintext byte for the PKCS7 padding
+count, dropping that many bytes (up to 255) of real data, or all it held
+when the count was larger, and ended. When the caller's interrupt
+callback stops the inner http read (AVERROR_EXIT), an AES-128 segment of
+hls ended there, short of the rest and of those bytes: 0099 reads an
 unencrypted segment on after an interrupt, an encrypted one lost the rest.
 
 Return AVERROR_EXIT as it is. Nothing was taken from the inner input, and
 what was read before stays in the input buffer, so the next read goes on
 from there. So is every other error (a body cut short, which 0107 ends
-in EIO): it was taken for the end too, the cut segment's last block
-"unpadded" from ciphertext and played with no error logged. Only the end
-of the input (a read of 0, AVERROR_EOF) ends it.
+in EIO): it was taken for the end too, the cut segment shortened by a
+"padding" count read from its data and played with no error logged. Only
+the end of the input (a read of 0, AVERROR_EOF) ends it.
 
 diff --git a/libavformat/crypto.c b/libavformat/crypto.c
 --- a/libavformat/crypto.c
