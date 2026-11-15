@@ -112,6 +112,10 @@ int main(int argc, char **argv)
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "-o") && i + 1 < argc) {
             char *kv = argv[++i], *eq = strchr(kv, '=');
+            if (!eq) {
+                fprintf(stderr, "-o %s: key=value\n", kv);
+                return 2;
+            }
             *eq = 0;
             av_dict_set(&opts, kv, eq + 1, 0);
         } else if (!strcmp(argv[i], "-stallint")) {
@@ -171,7 +175,10 @@ int main(int argc, char **argv)
         last_pkt = av_gettime_relative();
         {
             AVStream *st = s->streams[pkt->stream_index];
-            double pts = pkt->pts == AV_NOPTS_VALUE ? -1 : pkt->pts * av_q2d(st->time_base);
+            /* the dts where there is no pts (hls gives an ID3-timestamped
+             * stream's packets only a dts) */
+            int64_t ts = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
+            double pts = ts == AV_NOPTS_VALUE ? -1 : ts * av_q2d(st->time_base);
             if (pkt->stream_index < 16)
                 n[pkt->stream_index]++;
             if (st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE) {

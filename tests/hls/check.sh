@@ -1,12 +1,12 @@
 #!/bin/sh
-# The fixture checks of patches 0098-0104 (and the I54 trace) against a
+# The fixture checks of patches 0098-0106 (and the I54 trace) against a
 # harness built by setup.sh. Each check prints PASS or FAIL; the exit status
 # is the number of failures. With the series only up to 0097
-# (setup.sh WORKDIR 0097) b19, b20, i51, i52, init-dedup and headers-origin
-# fail.
+# (setup.sh WORKDIR 0097) all but xo-ipv6 and i54 fail (without 0104 the
+# headers go everywhere, IPv6 included).
 #
 # usage: tests/hls/check.sh WORKDIR [CHECK...]
-#   checks: b19 b20 i51 i52 init-dedup headers-origin i54 (default: all)
+#   checks: b19 b20 id3 i51 i52 init-dedup headers-origin i54 (default: all)
 set -u
 W=$(cd "$1" && pwd); shift
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -14,11 +14,17 @@ OUT="$W/out"; mkdir -p "$OUT"
 export HLS_FIXTURE_MEDIA="$W/media"
 PORT=${PORT:-18790}
 FAIL=0
+# each run capped at 60 s: timeout (GNU coreutils, Linux) or gtimeout (its
+# Homebrew name on macOS); without either the runs go uncapped
+CAP=$(command -v timeout || command -v gtimeout || true)
+[ -n "$CAP" ] || echo "note: no timeout or gtimeout, runs are not capped"
+cap() { if [ -n "$CAP" ]; then "$CAP" 60 "$@"; else "$@"; fi; }
 # the options RMP passes for a network HLS input (ffmpeg_input_options.rs)
 RMPO="-o seg_max_retry=0 -o seg_skip=live -o m3u8_hold_counters=10 -o reconnect=1 -o reconnect_streamed=1 -o reconnect_on_network_error=1 -o reconnect_on_http_error=5xx,408,429 -o reconnect_max_retries=3 -o reconnect_delay_max=2 -o rw_timeout=8000000 -o extension_picky=0"
 
 # run NAME "server args" PATH [hlsread args]: the log in $OUT/NAME.log, the
-# server's request log in $OUT/NAME.server.log
+# server's request log in $OUT/NAME.server.log; HOST: the address asked for
+# (127.0.0.1)
 run() {
     name=$1; sargs=$2; path=$3; shift 3
     PORT=$((PORT + 1))
@@ -28,7 +34,7 @@ run() {
     until grep -q listening "$OUT/$name.server.log" 2>/dev/null || [ $i -ge 50 ]; do
         sleep 0.1; i=$((i + 1))
     done
-    timeout 60 "$W/hlsread" "http://127.0.0.1:$PORT$path" "$@" > "$OUT/$name.log" 2>&1
+    cap "$W/hlsread" "http://${HOST:-127.0.0.1}:$PORT$path" "$@" > "$OUT/$name.log" 2>&1
     kill $srv 2>/dev/null; wait $srv 2>/dev/null
 }
 result() { # NAME CONDITION-TEXT 0|1
@@ -43,22 +49,55 @@ check_b19() { # 0098: the cues of WebVTT segments read on as one stream
     n=$(grep -c '^pkt' "$OUT/b19.log")
     [ "$n" = 5 ] && [ "$bad" = 0 ]; result b19 "5 cues, none with header lines ($n cues, $bad bad)" $?
 }
+read_on() { # NAME REF "server args" PATH [LOSS]: interrupted in a stall, nothing lost
+    name=$1; ref=$2; sargs=$3; path=$4; loss=${5:-}
+    run "$name" "$sargs" "$path" -q -stallint 300
+    want=$(field "$ref" s0); got=$(field "$name" s0); ex=$(field "$name" exits); step=$(field "$name" maxstep0)
+    # any number of interrupts from one on; no packet lost (LOSS=exits: at
+    # most one per interrupt), no gap
+    allowed=0; [ "$loss" = exits ] && allowed=${ex:-0}
+    [ "${ex:-0}" -ge 1 ] && [ -n "$want" ] && [ -n "$got" ] && [ "$got" -le "$want" ] &&
+        [ $((want - got)) -le "$allowed" ] &&
+        awk -v s="$step" 'BEGIN { exit !(s != "" && s + 0 < 0.25) }'
+    result "$name" "interrupted ($ex), $want video packets ($got, $allowed may be lost), no gap (largest step $step s)" $?
+}
 check_b20() { # 0099: an interrupt during a segment's body loses nothing
     run b20-ref "" /vod/index.m3u8 -q
-    run b20 "--stall 12:15000:1500" /vod/index.m3u8 -q -stallint 300
-    ref=$(field b20-ref s0); got=$(field b20 s0); ex=$(field b20 exits); step=$(field b20 maxstep0)
-    # any number of interrupts from one on; no packet lost, no gap
-    [ "${ex:-0}" -ge 1 ] && [ -n "$ref" ] && [ "$got" = "$ref" ] &&
-        awk -v s="$step" 'BEGIN { exit !(s != "" && s + 0 < 0.25) }'
-    result b20 "interrupted ($ex), all $ref video packets ($got), no gap (largest step $step s)" $?
+    read_on b20 b20-ref "--stall 12:15000:1500" /vod/index.m3u8
+    # 0106: the stall inside a chunk-size line (chunked transfer encoding)
+    read_on b20-chunked b20-ref "--chunked --stall 12:15000:1500" /vod/index.m3u8
+    # 0105: an AES-128 segment (crypto.c took the interrupt for its end)
+    run b20-aes-ref "" /aes/index.m3u8 -q
+    read_on b20-aes b20-aes-ref "--stall 12:15000:1500" /aes/index.m3u8
+    # fMP4: hls reads on, but mov drops the sample an interrupt cut (it moved
+    # past it before reading it; not seekable back): at most one per interrupt
+    run b20-fmp4-ref "" /vodfmp4/index.m3u8 -q
+    read_on b20-fmp4 b20-fmp4-ref "--stall 12:15000:1500" /vodfmp4/index.m3u8 exits
+}
+check_id3() { # 0099: an interrupt in a segment's first read keeps its ID3 timestamp
+    # a5's timestamp alone is 100 s on: the step is there only if a5's ID3
+    # tag was taken out (a5's first read is the one interrupted)
+    # (no avformat_find_stream_info(): it would read past a5 before the
+    # first packet, when hlsread does not interrupt yet)
+    run id3-ref "" /id3/index.m3u8 -q -nofsi -o http_multiple=0
+    run id3 "--stall 5:0:1500" /id3/index.m3u8 -q -nofsi -o http_multiple=0 -stallint 300
+    want=$(field id3-ref s0); got=$(field id3 s0); ex=$(field id3 exits)
+    rstep=$(field id3-ref maxstep0); step=$(field id3 maxstep0)
+    [ "${ex:-0}" -ge 1 ] && [ -n "$want" ] && [ "$got" = "$want" ] &&
+        awk -v r="$rstep" -v s="$step" 'BEGIN { exit !(r + 0 > 99 && s + 0 > 99) }'
+    result id3 "interrupted ($ex), all $want packets ($got), a5's 100 s on kept (largest step $step s, $rstep s uninterrupted)" $?
 }
 check_i51() { # 0100: a cut address line fails the load with a log
     run i51-fits "--long-line 16000" /long/index.m3u8 -q
     run i51-cut "--long-line 17000" /long/index.m3u8 -q
-    fits=$(field i51-fits s0)
+    # a cut tag whose address this demuxer does not read (EXT-X-DATERANGE's
+    # X-ASSET-URI=) only warns
+    run i51-tag "--long-tag 17000" /long/index.m3u8 -q
+    fits=$(field i51-fits s0); tag=$(field i51-tag s0)
     grep -q 'Playlist line longer than 16383 characters' "$OUT/i51-cut.log" &&
-        grep -q '^open failed: Invalid data' "$OUT/i51-cut.log" && [ "$fits" = 125 ]
-    result i51 "16000 chars play (s0=$fits of 125), 17000 fail with INVALIDDATA and a log" $?
+        grep -q '^open failed: Invalid data' "$OUT/i51-cut.log" && [ "$fits" = 125 ] &&
+        grep -q 'Playlist line longer than 16383 characters cut' "$OUT/i51-tag.log" && [ "$tag" = 125 ]
+    result i51 "16000 chars play (s0=$fits of 125), 17000 fail with INVALIDDATA and a log, a cut DATERANGE plays (s0=$tag)" $?
 }
 check_i52() { # 0101: a live init section failure fails its segment, not the input
     run i52-once "--init-fail 1" /livefmp4/index.m3u8 -q -maxtime 5 -o seg_max_retry=0 -o seg_skip=live
@@ -86,11 +125,12 @@ run2() { # 0104's fixture
     done
     if [ "$which" = A ]; then port=$a; else port=$b; fi
     [ "$named" = A ] && named=http://127.0.0.1:$a
+    [ "$named" = A-noscheme ] && named=127.0.0.1:$a
     if [ -n "$named" ]; then
-        timeout 60 "$W/hlsread" "http://127.0.0.1:$port/xo/index.m3u8" -q -o http_multiple=0 -o "headers=X-Token: secret" \
+        cap "$W/hlsread" "http://127.0.0.1:$port/xo/index.m3u8" -q -o http_multiple=0 -o "headers=X-Token: secret" \
             -o "headers_origin=$named" > "$OUT/$name.log" 2>&1
     else
-        timeout 60 "$W/hlsread" "http://127.0.0.1:$port/xo/index.m3u8" -q -o http_multiple=0 -o "headers=X-Token: secret" > "$OUT/$name.log" 2>&1
+        cap "$W/hlsread" "http://127.0.0.1:$port/xo/index.m3u8" -q -o http_multiple=0 -o "headers=X-Token: secret" > "$OUT/$name.log" 2>&1
     fi
     kill $srv 2>/dev/null; wait $srv 2>/dev/null
     A_PORT=$a
@@ -121,6 +161,24 @@ check_headers_origin() {
     segs=$(grep -c 'GET /xo/s[0-9]' "$OUT/xo-origin-bad.server.log")
     [ "$sent" = 0 ] && [ "$segs" = 5 ] && grep -q 'Custom headers not sent: no origin' "$OUT/xo-origin-bad.log"
     result xo-origin-bad "an unreadable headers_origin sends the token nowhere ($sent requests with it, $segs segments)" $?
+    # one without the scheme is no origin either, and says so
+    run2 xo-origin-noscheme A A-noscheme
+    sent=$(grep 'GET /xo/' "$OUT/xo-origin-noscheme.server.log" | grep -c 'token=yes')
+    segs=$(grep -c 'GET /xo/s[0-9]' "$OUT/xo-origin-noscheme.server.log")
+    [ "$sent" = 0 ] && [ "$segs" = 5 ] && grep -q 'Custom headers not sent: no origin' "$OUT/xo-origin-noscheme.log"
+    result xo-origin-noscheme "headers_origin=host:port sends the token nowhere, with a warning ($sent requests with it, $segs segments)" $?
+    # an IPv6 literal origin ([::1]): one origin, every request gets the token
+    if python3 -I -c 'import socket; s = socket.socket(socket.AF_INET6); s.bind(("::1", 0))' 2>/dev/null; then
+        HOST="[::1]"
+        run xo-ipv6 "--ipv6" /xo/index.m3u8 -q -o http_multiple=0 -o "headers=X-Token: secret"
+        HOST=
+        no=$(grep 'GET /xo/' "$OUT/xo-ipv6.server.log" | grep -c 'token=no')
+        segs=$(grep -c 'GET /xo/s[0-9]' "$OUT/xo-ipv6.server.log")
+        [ "$no" = 0 ] && [ "$segs" = 5 ] && ! grep -q 'Custom headers not sent' "$OUT/xo-ipv6.log"
+        result xo-ipv6 "an IPv6 literal origin gets the token on every request ($no without it, $segs segments)" $?
+    else
+        echo "SKIP xo-ipv6: no IPv6 loopback here"
+    fi
 }
 check_i54() { # trace: two 404s in a row, RMP's options, a player 2-3 s behind the edge
     for lsi in -2 -3; do
@@ -133,6 +191,6 @@ check_i54() { # trace: two 404s in a row, RMP's options, a player 2-3 s behind t
     done
 }
 
-CHECKS=${*:-b19 b20 i51 i52 init_dedup headers_origin i54}
+CHECKS=${*:-b19 b20 id3 i51 i52 init_dedup headers_origin i54}
 for c in $CHECKS; do "check_$(echo "$c" | tr - _)"; done
 exit $FAIL
