@@ -21,9 +21,12 @@ interrupt cuts that read, nothing is parsed: the fragment's headers_read
 is undone, AVERROR_EXIT is returned, and the next call reads the root
 again from the same position (hls's reset path at position 0 too). A
 seek drops the pending read. The parse itself then reads only from the
-buffer. On a seekable input the seek back may go to the input where the
-atoms spanned a refill; mov reads a seekable fragmented input's
-fragments when it opens it, so this path is rare there.
+buffer. Not on a seekable input (a progressive file, a DASH or CMAF .mp4
+whose sidx makes mov switch roots at every fragment): there the seeks
+would go to the protocol where the atoms span the buffer (for http a new
+connection with a Range request), and an interrupt's error stays in the
+input's context for good (hls alone clears it), so there is nothing to
+read again; such an input reads as before.
 
 diff --git a/libavformat/isom.h b/libavformat/isom.h
 --- a/libavformat/isom.h
@@ -40,7 +43,7 @@ diff --git a/libavformat/isom.h b/libavformat/isom.h
 diff --git a/libavformat/mov.c b/libavformat/mov.c
 --- a/libavformat/mov.c
 +++ b/libavformat/mov.c
-@@ -11239,11 +11239,70 @@ static int should_retry(AVIOContext *pb, int error_code) {
+@@ -11239,11 +11239,75 @@ static int should_retry(AVIOContext *pb, int error_code) {
      return 1;
  }
  
@@ -60,8 +63,13 @@ diff --git a/libavformat/mov.c b/libavformat/mov.c
 +    int64_t start = avio_tell(pb), end = start, kept = 4096;
 +    int cut = 0;
 +
-+    /* the buffer keeps everything from start on (a no-op on a seekable
-+     * input, which can seek back) */
++    /* Only an input that cannot seek back: on one that can, the seeks here
++     * go to the protocol (http: a new connection) when the atoms span the
++     * buffer, and an interrupt's error stays in its context for good (hls
++     * alone clears it), so there is nothing to read again. */
++    if (pb->seekable & AVIO_SEEKABLE_NORMAL)
++        return 0;
++    /* the buffer keeps everything from start on */
 +    if (ffio_ensure_seekback(pb, kept) < 0)
 +        return 0;
 +    for (int i = 0; i < MOV_PRELOAD_ATOMS; i++) {
@@ -92,7 +100,7 @@ diff --git a/libavformat/mov.c b/libavformat/mov.c
 +        }
 +        size = len == 16 ? AV_RB64(hdr + 8) : AV_RB32(hdr);
 +        if (AV_RL32(hdr + 4) == MKTAG('m','d','a','t') || size < len ||
-+            size > MOV_PRELOAD_MAX - (end - start))
++            size > (uint64_t)(MOV_PRELOAD_MAX - (end - start)))
 +            break;
 +        end += size;
 +    }
@@ -111,7 +119,7 @@ diff --git a/libavformat/mov.c b/libavformat/mov.c
      if (index >= 0 && index < mov->frag_index.nb_items)
          target = mov->frag_index.item[index].moof_offset;
      if (target >= 0 && avio_seek(s->pb, target, SEEK_SET) != target) {
-@@ -11261,10 +11320,23 @@ static int mov_switch_root(AVFormatContext *s, int64_t target, int index)
+@@ -11261,10 +11325,23 @@ static int mov_switch_root(AVFormatContext *s, int64_t target, int index)
          if (mov->frag_index.item[index].headers_read)
              return 0;
          mov->frag_index.item[index].headers_read = 1;
@@ -135,7 +143,7 @@ diff --git a/libavformat/mov.c b/libavformat/mov.c
      ret = mov_read_default(mov, s->pb, (MOVAtom){ AV_RL32("root"), INT64_MAX });
      if (ret < 0)
          return ret;
-@@ -11479,6 +11551,10 @@ static int mov_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -11479,6 +11556,10 @@ static int mov_read_packet(AVFormatContext *s, AVPacket *pkt)
  
          if ((ret = mov_switch_root(s, -1, -1)) < 0)
              return ret;
@@ -146,7 +154,7 @@ diff --git a/libavformat/mov.c b/libavformat/mov.c
      }
      sample = mov_find_next_sample(s, &st);
      if (!sample || (mov->next_root_atom && sample->pos > mov->next_root_atom)) {
-@@ -11813,6 +11889,7 @@ static int mov_read_seek(AVFormatContext *s, int stream_index, int64_t sample_ti
+@@ -11813,6 +11894,7 @@ static int mov_read_seek(AVFormatContext *s, int stream_index, int64_t sample_ti
      if (stream_index >= s->nb_streams)
          return AVERROR_INVALIDDATA;
  
