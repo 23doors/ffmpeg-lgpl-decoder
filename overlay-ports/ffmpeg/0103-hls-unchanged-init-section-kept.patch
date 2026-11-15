@@ -18,15 +18,10 @@ it, which freed it again when the playlist was closed.
 diff --git a/libavformat/hls.c b/libavformat/hls.c
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -603,6 +603,39 @@ static struct segment *new_init_section(struct playlist *pls,
+@@ -607,6 +607,39 @@ static struct segment *new_init_section(struct playlist *pls,
      return sec;
  }
  
-+/* A live playlist lists its EXT-X-MAP again on each reload. The section
-+ * just added (the last one) that is the same as one listed before is that
-+ * one: it is not downloaded and given to the demuxer again, and the list does
-+ * not grow with each reload. A section of other bytes (another address or
-+ * range, another key or IV) is a new one. */
 +/* The section just added, which the playlist's list holds and frees, is
 + * dropped from it. */
 +static void drop_last_init_section(struct playlist *pls)
@@ -38,6 +33,11 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
 +    av_free(sec);
 +}
 +
++/* A live playlist lists its EXT-X-MAP again on each reload. The section
++ * just added (the last one) that is the same as one listed before is that
++ * one: it is not downloaded and given to the demuxer again, and the list does
++ * not grow with each reload. A section of other bytes (another address or
++ * range, another key or IV) is a new one. */
 +static struct segment *dedup_init_section(struct playlist *pls,
 +                                          struct segment *sec)
 +{
@@ -58,7 +58,7 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
  static void handle_init_section_args(void *context, const char *key,
                                       int key_len, char **dest, int *dest_len)
  {
-@@ -1223,19 +1256,20 @@ static int parse_playlist(HLSContext *c, const char *url,
+@@ -1230,19 +1263,20 @@ static int parse_playlist(HLSContext *c, const char *url,
              if (key_type != KEY_NONE) {
                  ff_make_absolute_url(tmp_str, sizeof(tmp_str), url, key);
                  if (!tmp_str[0]) {
