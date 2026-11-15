@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HLS fixture server for the pack's hls/http/mov/mpegts patches 0098-0110 (check.sh).
+"""HLS fixture server for the pack's hls/http/mov/mpegts patches 0098-0112 (check.sh).
 
 usage: server.py PORT [options]
   --stall SEQ:BYTES:MS      VOD/live segment SEQ (TS, fMP4, AES-128, ID3 audio): send
@@ -7,6 +7,10 @@ usage: server.py PORT [options]
   --chunked                 VOD TS segments in chunked transfer encoding (4 KiB chunks);
                             with --stall the stall falls inside the chunk-size line that
                             follows BYTES
+  --trailer                 with --chunked: the last chunk is followed by a trailer field,
+                            the blank line after it 200 ms later
+  --trunc SEQ:BYTES:MS      VOD segment SEQ (TS, fMP4): no Content-Length, BYTES of it,
+                            sleep MS, then the connection closes (a truncated last segment)
   --live-404 SEQ[,SEQ]      live: these segments answer 404
   --init-fail N[:CODE]      live fMP4: the first N init section requests answer CODE (503)
   --init-cut N              live fMP4: the first N init section requests send the whole
@@ -23,6 +27,9 @@ usage: server.py PORT [options]
 Paths:
   /vod/index.m3u8   VOD TS, 1 s segments s0..s19
   /vodfmp4/index.m3u8  the same in fMP4, with EXT-X-MAP init.mp4
+  /vodfmp4big/index.m3u8  fMP4 640x360 with keyframes over 64 KiB (media/fmp4big)
+  /vodtsbig/index.m3u8  the same in TS (media/tsbig, 6.5 MB: past mpegts's 5 MB probe
+                    window, which keeps hls's I/O buffer that large until then)
   /aes/index.m3u8   the same TS, AES-128 encrypted (setup.sh's media/aes, key.bin)
   /id3/index.m3u8   audio-only ADTS, 1 s segments a0..a9, each led by an ID3 PRIV
                     timestamp (the HLS packed audio rule); a5's alone is 100 s on
@@ -53,7 +60,7 @@ args = sys.argv[2:]
 opt = {}
 i = 0
 while i < len(args):
-    if args[i] in ("--chunked", "--ipv6"):
+    if args[i] in ("--chunked", "--ipv6", "--trailer"):
         i += 1
         continue
     opt[args[i]] = args[i + 1]
@@ -72,10 +79,15 @@ if "--init-fail" in opt:
     if len(p) > 1:
         INIT_CODE = int(p[1])
 CUT = int(opt["--cut"]) if "--cut" in opt else None
+TRUNC = None
+if "--trunc" in opt:
+    s_, b_, ms_ = opt["--trunc"].split(":")
+    TRUNC = (int(s_), int(b_), int(ms_))
 INIT_CUT = int(opt.get("--init-cut", "0"))
 LONG = int(opt.get("--long-line", "0"))
 LONG_TAG = int(opt.get("--long-tag", "0"))
 CHUNKED = "--chunked" in sys.argv
+TRAILER = "--trailer" in sys.argv
 IPV6 = "--ipv6" in sys.argv
 PORTS = [int(sys.argv[1])] + ([int(opt["--second-port"])] if "--second-port" in opt else [])
 init_requests = 0
@@ -138,7 +150,19 @@ class H(BaseHTTPRequestHandler):
         return getattr(self, "server_name", None) or BaseHTTPRequestHandler.version_string(self)
 
     def send(self, code, body=b"", ctype="application/octet-stream", stall=None, cut=False,
-             length=None):
+             length=None, trunc=None):
+        if trunc:
+            # no length: the body ends where the connection closes
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body[:trunc[0]])
+            self.wfile.flush()
+            log("  truncated at %d of %d bytes, closing in %d ms" % (trunc[0], len(body), trunc[1]))
+            time.sleep(trunc[1] / 1000.0)
+            self.close_connection = True
+            return
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body) if length is None else length))
@@ -184,7 +208,16 @@ class H(BaseHTTPRequestHandler):
                 size = size[1:]
             self.wfile.write(size + chunk + b"\r\n")
             sent += len(chunk)
-        self.wfile.write(b"0\r\n\r\n")
+        if TRAILER:
+            # the blank line that ends the trailer comes in a later packet,
+            # as on a real network (one in the same packet is dropped with
+            # the buffer when the next request goes)
+            self.wfile.write(b"0\r\nX-Trailer: y\r\n")
+            self.wfile.flush()
+            time.sleep(0.2)
+            self.wfile.write(b"\r\n")
+        else:
+            self.wfile.write(b"0\r\n\r\n")
 
     def redirect(self, url):
         self.send_response(302)
@@ -216,14 +249,25 @@ class H(BaseHTTPRequestHandler):
                 mpegurl)
         if p == "/id3/index.m3u8":
             return self.send(200, vod_playlist("a%d.aac", n=10), mpegurl)
+        if p == "/vodtsbig/index.m3u8":
+            return self.send(200, vod_playlist("s%d.ts"), mpegurl)
+        if p == "/vodfmp4big/index.m3u8":
+            return self.send(200, vod_playlist("s%d.m4s", head='#EXT-X-MAP:URI="init.mp4"\n'), mpegurl)
         stall = None
-        if STALL and p.rsplit("/", 1)[-1].split(".")[0][1:] == str(STALL[0]):
+        seq = p.rsplit("/", 1)[-1].split(".")[0][1:]
+        if STALL and seq == str(STALL[0]):
             stall = (STALL[1], STALL[2])
-        if p == "/vodfmp4/init.mp4":
-            return self.send(200, open(os.path.join(D, "fmp4", "init.mp4"), "rb").read(), "video/mp4")
-        if p.startswith("/vodfmp4/s"):
-            n = int(p[len("/vodfmp4/s"):].split(".")[0])
-            return self.send(200, open(os.path.join(D, "fmp4", "s%d.m4s" % n), "rb").read(), "video/iso.segment", stall)
+        trunc = (TRUNC[1], TRUNC[2]) if TRUNC and seq == str(TRUNC[0]) and p.startswith(("/vod/", "/vodfmp4/")) else None
+        if p.startswith("/vodtsbig/s"):
+            n = int(p[len("/vodtsbig/s"):].split(".")[0])
+            return self.send(200, open(os.path.join(D, "tsbig", "s%d.ts" % n), "rb").read(), "video/mp2t", stall)
+        for prefix, d in (("/vodfmp4/", "fmp4"), ("/vodfmp4big/", "fmp4big")):
+            if p == prefix + "init.mp4":
+                return self.send(200, open(os.path.join(D, d, "init.mp4"), "rb").read(), "video/mp4")
+            if p.startswith(prefix + "s"):
+                n = int(p[len(prefix) + 1:].split(".")[0])
+                return self.send(200, open(os.path.join(D, d, "s%d.m4s" % n), "rb").read(), "video/iso.segment",
+                                 stall, trunc=trunc)
         if p == "/aes/key.bin":
             return self.send(200, open(os.path.join(D, "aes", "key.bin"), "rb").read())
         if p.startswith("/aes/s"):
@@ -280,7 +324,8 @@ class H(BaseHTTPRequestHandler):
             body = open(os.path.join(D, "ts", "s%d.ts" % n), "rb").read()
             if CHUNKED and p.startswith("/vod/"):
                 return self.send_chunked(body, "video/mp2t", stall)
-            return self.send(200, body, "video/mp2t", stall, cut=p.startswith("/vod/") and n == CUT)
+            return self.send(200, body, "video/mp2t", stall, cut=p.startswith("/vod/") and n == CUT,
+                             trunc=trunc)
         if p == "/prog/file.ts":
             body = b"".join(open(os.path.join(D, "ts", "s%d.ts" % n), "rb").read() for n in range(5))
             return self.send(200, body, "video/mp2t", cut=CUT is not None)

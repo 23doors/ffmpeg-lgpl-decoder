@@ -65,6 +65,26 @@ if [ ! -f "$M/ts/s59.ts" ] || [ ! -f "$M/fmp4/s59.m4s" ]; then
             -f hls -hls_time 1 -hls_list_size 0 $seg "$M/$kind/full.m3u8"
     done
 fi
+if [ ! -f "$M/fmp4big/s19.m4s" ]; then
+    # 20 s of fMP4 whose keyframes are over 64 KiB (twice hls's I/O buffer:
+    # avio_read() reads such a sample past the buffer); the noise keeps x264
+    # from making them small
+    rm -rf "$M/fmp4big"; mkdir -p "$M/fmp4big"
+    ffmpeg -nostdin -v error -f lavfi -i testsrc2=size=640x360:rate=25 \
+        -f lavfi -i sine=f=440:sample_rate=48000 -t 20 -vf noise=alls=12:all_seed=1 \
+        -c:v libx264 -preset veryfast -g 25 -keyint_min 25 -sc_threshold 0 -crf 20 \
+        -c:a aac -b:a 64k -f hls -hls_time 1 -hls_list_size 0 -hls_segment_type fmp4 \
+        -hls_fmp4_init_filename init.mp4 -hls_segment_filename "$M/fmp4big/s%d.m4s" "$M/fmp4big/full.m3u8"
+fi
+if [ ! -f "$M/tsbig/s19.ts" ]; then
+    # the same in TS: 6.5 MB, past mpegts's 5 MB probe window
+    rm -rf "$M/tsbig"; mkdir -p "$M/tsbig"
+    ffmpeg -nostdin -v error -f lavfi -i testsrc2=size=640x360:rate=25 \
+        -f lavfi -i sine=f=440:sample_rate=48000 -t 20 -vf noise=alls=12:all_seed=1 \
+        -c:v libx264 -preset veryfast -g 25 -keyint_min 25 -sc_threshold 0 -crf 20 \
+        -c:a aac -b:a 64k -f hls -hls_time 1 -hls_list_size 0 \
+        -hls_segment_filename "$M/tsbig/s%d.ts" "$M/tsbig/full.m3u8"
+fi
 if [ ! -f "$M/aes/s19.ts" ]; then
     # the TS segments AES-128 encrypted (CBC, PKCS7), as server.py's /aes/ lists them
     rm -rf "$M/aes"; mkdir -p "$M/aes"

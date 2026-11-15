@@ -10,7 +10,8 @@
  *   -pace LEAD    simulate a player of stream 0 (see below) that reads at
  *                 most LEAD s ahead; -start S: it starts with S s buffered
  * Prints per packet "pkt <t_wall> <stream> <pts_s> <size>" (subtitle packets
- * with their text), and a summary: packets per stream, the largest pts step
+ * with their text), and a summary: packets per stream, a CRC of each
+ * stream's packet data (crcN, the packets in order), the largest pts step
  * of stream 0, the result. */
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +19,7 @@
 #include <libavformat/avformat.h>
 #include <libavutil/time.h>
 #include <libavutil/opt.h>
+#include <libavutil/crc.h>
 
 static int64_t t0, last_pkt, int_until;
 
@@ -106,6 +108,8 @@ int main(int argc, char **argv)
     AVPacket *pkt = av_packet_alloc();
     double maxtime = 60;
     int quiet = 0, nofsi = 0, ret, n[16] = { 0 }, exits = 0;
+    uint32_t crc[16] = { 0 };
+    const AVCRC *crc_table = av_crc_get_table(AV_CRC_32_IEEE_LE);
     double prev0 = -1, maxstep0 = 0;
     const char *url = argv[1];
 
@@ -179,8 +183,10 @@ int main(int argc, char **argv)
              * stream's packets only a dts) */
             int64_t ts = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
             double pts = ts == AV_NOPTS_VALUE ? -1 : ts * av_q2d(st->time_base);
-            if (pkt->stream_index < 16)
+            if (pkt->stream_index < 16) {
                 n[pkt->stream_index]++;
+                crc[pkt->stream_index] = av_crc(crc_table, crc[pkt->stream_index], pkt->data, pkt->size);
+            }
             if (st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE) {
                 printf("pkt %.3f %d %.3f %d \"", now, pkt->stream_index, pts, pkt->size);
                 for (int i = 0; i < pkt->size; i++)
@@ -207,6 +213,8 @@ int main(int argc, char **argv)
     printf("summary: exits=%d", exits);
     for (int i = 0; i < (int)s->nb_streams && i < 16; i++)
         printf(" s%d=%d", i, n[i]);
+    for (int i = 0; i < (int)s->nb_streams && i < 16; i++)
+        printf(" crc%d=%08x", i, crc[i]);
     printf(" last_pts0=%.3f maxstep0=%.3f", prev0, maxstep0);
     if (pace > 0)
         printf(" stalls=%d rebuffer=%.3f", p_stalls, p_rebuf);

@@ -1,12 +1,13 @@
 #!/bin/sh
-# The fixture checks of patches 0098-0110 (and the I54 trace) against a
+# The fixture checks of patches 0098-0112 (and the I54 trace) against a
 # harness built by setup.sh. Each check prints PASS or FAIL; the exit status
 # is the number of failures. With the series only up to 0097
 # (setup.sh WORKDIR 0097) all but xo-ipv6 and i54 fail (without 0104 the
 # headers go everywhere, IPv6 included).
 #
 # usage: tests/hls/check.sh WORKDIR [CHECK...]
-#   checks: b19 b20 id3 i51 i52 init-dedup init-cut headers-origin i54 cut-body
+#   checks: b19 b20 trunc chunk-trailer id3 i51 i52 init-dedup init-cut
+#           headers-origin i54 cut-body
 #   (default: all)
 set -u
 W=$(cd "$1" && pwd); shift
@@ -50,23 +51,28 @@ check_b19() { # 0098: the cues of WebVTT segments read on as one stream
     n=$(grep -c '^pkt' "$OUT/b19.log")
     [ "$n" = 5 ] && [ "$bad" = 0 ]; result b19 "5 cues, none with header lines ($n cues, $bad bad)" $?
 }
-read_on() { # NAME REF "server args" PATH [LOSS]: interrupted in a stall, nothing lost
-    name=$1; ref=$2; sargs=$3; path=$4; loss=${5:-}
+read_on() { # NAME REF "server args" PATH: interrupted in a stall, nothing lost
+    name=$1; ref=$2; sargs=$3; path=$4
     run "$name" "$sargs" "$path" -q -stallint 300
     want=$(field "$ref" s0); got=$(field "$name" s0); ex=$(field "$name" exits); step=$(field "$name" maxstep0)
+    # (every fixture has an audio stream s1: one without would FAIL here on
+    # the empty counts, not skip the audio part)
     want1=$(field "$ref" s1); got1=$(field "$name" s1)
-    # hlsread's interrupts (each may give more than one AVERROR_EXIT)
-    ints=$(grep -c '^interrupt at' "$OUT/$name.log")
-    # interrupted and read on; no video packet lost (LOSS=interrupts: at most
-    # one per interrupt), no audio packet (0110: mpegts kept a cut PES), none
-    # handed on cut, no gap
-    allowed=0; [ "$loss" = interrupts ] && allowed=$ints
-    [ "$ints" -ge 1 ] && [ "${ex:-0}" -ge 1 ] && [ -n "$want" ] && [ -n "$got" ] && [ "$got" -le "$want" ] &&
-        [ $((want - got)) -le "$allowed" ] && [ -n "$want1" ] && [ "$got1" = "$want1" ] &&
-        ! grep -q 'Packet corrupt' "$OUT/$name.log" &&
+    # the packets' data, byte for byte (a TS packet lost inside a video PES
+    # of no stated length changes no count)
+    same=0; [ "$(field "$ref" crc0)$(field "$ref" crc1)" = "$(field "$name" crc0)$(field "$name" crc1)" ] && same=1
+    # hlsread's interrupts (each may give more than one AVERROR_EXIT); the
+    # line comes from stderr into the file stdout also writes, so it is not
+    # anchored at a line start
+    ints=$(grep -c 'interrupt at' "$OUT/$name.log")
+    # interrupted and read on; no video or audio packet lost or changed,
+    # none handed on cut, no gap
+    [ "$ints" -ge 1 ] && [ "${ex:-0}" -ge 1 ] && [ -n "$want" ] && [ "$got" = "$want" ] &&
+        [ -n "$want1" ] && [ "$got1" = "$want1" ] && [ $same = 1 ] && ! grep -q 'Packet corrupt' "$OUT/$name.log" &&
         awk -v s="$step" 'BEGIN { exit !(s != "" && s + 0 < 0.25) }'
     ok=$?; bad=$(grep -c 'Packet corrupt' "$OUT/$name.log")
-    result "$name" "interrupted ($ints, $ex AVERROR_EXIT), $want video packets ($got, $allowed may be lost), all $want1 audio ($got1), none corrupt ($bad), no gap (largest step $step s)" $ok
+    if [ $same = 1 ]; then same=same; else same=differ; fi
+    result "$name" "interrupted ($ints, $ex AVERROR_EXIT), all $want video packets ($got), all $want1 audio ($got1), their data the reference's ($same), none corrupt ($bad), no gap (largest step $step s)" $ok
 }
 check_b20() { # 0099: an interrupt during a segment's body loses nothing
     run b20-ref "" /vod/index.m3u8 -q
@@ -74,14 +80,58 @@ check_b20() { # 0099: an interrupt during a segment's body loses nothing
     # 0106: the stall inside a chunk-size line (chunked transfer encoding);
     # 0110: the interrupt falls inside an audio PES there
     read_on b20-chunked b20-ref "--chunked --stall 12:15000:1500" /vod/index.m3u8
+    # 0110: a TS packet begun before a refill of hls's 32 KiB buffer, whose
+    # refill brought 50 bytes before the interrupt: the rewind needs the
+    # bytes of both (s18 of tsbig is past the 5 MB that mpegts's probe keeps
+    # the buffer at; its packet at 32712 spans 32768)
+    run b20-tsbig-ref "" /vodtsbig/index.m3u8 -q
+    read_on b20-tsbig b20-tsbig-ref "--stall 18:32818:1500" /vodtsbig/index.m3u8
     # 0105: an AES-128 segment (crypto.c took the interrupt for its end)
     run b20-aes-ref "" /aes/index.m3u8 -q
     read_on b20-aes b20-aes-ref "--stall 12:15000:1500" /aes/index.m3u8
-    # 0108: fMP4 (mov reads the sample an interrupt cut again; one that
-    # spanned a refill of hls's buffer cannot be read again and is lost: at
-    # most one per interrupt, never handed on cut)
+    # 0108: fMP4 (mov keeps what came of the sample an interrupt cut and
+    # reads its rest on the next call)
     run b20-fmp4-ref "" /vodfmp4/index.m3u8 -q
-    read_on b20-fmp4 b20-fmp4-ref "--stall 12:15000:1500" /vodfmp4/index.m3u8 interrupts
+    read_on b20-fmp4 b20-fmp4-ref "--stall 12:15000:1500" /vodfmp4/index.m3u8
+    # 0108: an audio sample begun before a refill (s12's at 32729 spans
+    # 32768), 20 bytes of it in the refill before the interrupt
+    read_on b20-fmp4-straddle b20-fmp4-ref "--stall 12:32788:1500" /vodfmp4/index.m3u8
+    # 0108: the stall where s12's second video sample starts (7987): its
+    # read gets nothing but the interrupt
+    read_on b20-fmp4-zero b20-fmp4-ref "--stall 12:7987:1500" /vodfmp4/index.m3u8
+    # 0108: s12's keyframe of 120093 bytes at 704 (avio_read() reads what
+    # the buffer lacks of it past the buffer, which it then empties) cut at
+    # 60000
+    run b20-fmp4big-ref "" /vodfmp4big/index.m3u8 -q
+    read_on b20-fmp4big b20-fmp4big-ref "--stall 12:60000:1500" /vodfmp4big/index.m3u8
+    # 0111: the stall before s12's body: the interrupt cuts the read of the
+    # next fragment's moof (stock mov forgot the fragment and ended the
+    # playlist at the next call); and one inside the moof (704 bytes)
+    read_on b20-fmp4-edge b20-fmp4-ref "--stall 12:0:1500" /vodfmp4/index.m3u8
+    read_on b20-fmp4-moof b20-fmp4-ref "--stall 12:300:1500" /vodfmp4/index.m3u8
+}
+check_trunc() { # 0112: an interrupt where a truncated last segment ends
+    # s19 sends 15000 bytes, waits and closes: the interrupt cuts a TS packet
+    # or an fMP4 sample whose rest never comes; the input then ends (with
+    # the interrupt latched, the cut was taken for an interrupt on every
+    # call: AVERROR_EXIT without end)
+    for kind in ts fmp4; do
+        if [ $kind = ts ]; then path=/vod/index.m3u8; else path=/vodfmp4/index.m3u8; fi
+        run trunc-$kind "--trunc 19:15000:1500" $path -q -stallint 300 -maxtime 15
+        ints=$(grep -c 'interrupt at' "$OUT/trunc-$kind.log"); ex=$(field trunc-$kind exits)
+        [ "$ints" -ge 1 ] && grep -q '^end: End of file' "$OUT/trunc-$kind.log"
+        ok=$?; how=$(grep -E '^(end|maxtime)' "$OUT/trunc-$kind.log" | head -1)
+        result trunc-$kind "interrupted ($ints), the input ends ($ex AVERROR_EXIT; $how)" $ok
+    done
+}
+check_chunk_trailer() { # 0106: a chunked reply with a trailer field, on a kept-alive connection
+    run trailer-ref "" /vod/index.m3u8 -q
+    run trailer "--chunked --trailer" /vod/index.m3u8 -q
+    want=$(field trailer-ref s0); got=$(field trailer s0)
+    req=$(grep -c 'GET /vod/s' "$OUT/trailer.server.log")
+    conns=$(grep 'GET /vod/s' "$OUT/trailer.server.log" | sed 's/.*conn=//' | sort -u | wc -l | tr -d ' ')
+    [ -n "$want" ] && [ "$got" = "$want" ] && [ "$req" = 20 ] && [ "$conns" -le 2 ]
+    result chunk-trailer "all $want video packets ($got), 20 segment requests ($req) on kept-alive connections ($conns)" $?
 }
 check_id3() { # 0099: an interrupt in a segment's first read keeps its ID3 timestamp
     # a5's timestamp alone is 100 s on: the step is there only if a5's ID3
@@ -249,6 +299,6 @@ check_cut_body() { # 0107: a cut body from a server without ranges is not read a
     result cut-aes "the cut AES-128 segment requested once ($req), read on to the end (s19: $after), $got of $full video packets" $?
 }
 
-CHECKS=${*:-b19 b20 id3 i51 i52 init_dedup init_cut headers_origin i54 cut_body}
+CHECKS=${*:-b19 b20 trunc chunk_trailer id3 i51 i52 init_dedup init_cut headers_origin i54 cut_body}
 for c in $CHECKS; do "check_$(echo "$c" | tr - _)"; done
 exit $FAIL
