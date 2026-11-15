@@ -27,7 +27,11 @@ start at the position: up to the first of their packets there, or the
 video past its segment, earlier ones are dropped, so audio does not go
 back. Live playlists, and playlists without a video stream (audio
 renditions, packed audio, subtitles), keep the AVSEEK_FLAG_ANY catch-up;
-nothing changes without a seek or a newly needed playlist.
+nothing changes without a seek or a newly needed playlist. The one
+change for the seek playlist itself, needed on the read after the seek:
+a muxed variant's audio before the segment start the video snapped to
+is dropped, where the seek alone passed it (a caller drops it by PTS
+anyway).
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
 --- a/libavformat/hls.c
