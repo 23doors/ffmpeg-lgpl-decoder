@@ -4,16 +4,32 @@ A seek, and since 0114 a playlist needed again, set cur_init_section to
 NULL, so the next segment's update_init_section() fetched the init
 section again although init_sec_buf still held what the first fetch
 read (a fetch that failed leaves cur_init_section NULL): an extra
-request per seek, and per track switch, on every fMP4 stream.
+request per seek, and per track switch, on every fMP4 stream. The
+SAMPLE-AES probe in hls_read_header() did the same after reading the
+first segment's ID3 data.
 
 Rewind the buffered one instead: the next segment that maps it serves it
 from init_sec_buf; one that maps another section fetches that one as
-before.
+before. One that maps none (segments before a playlist's first
+EXT-X-MAP) gets nothing served: update_init_section() now ends the serve
+of the section it forgets, where a rewound one would otherwise be served
+before that segment.
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -1950,6 +1950,16 @@ static int update_init_section(struct playlist *pls, struct segment *seg)
+@@ -1899,7 +1899,10 @@ static int update_init_section(struct playlist *pls, struct segment *seg)
+     if (seg->init_section == pls->cur_init_section)
+         return 0;
+ 
++    /* nothing left to serve of the one held (restart_init_section() may have
++     * rewound it) */
+     pls->cur_init_section = NULL;
++    pls->init_sec_buf_read_offset = pls->init_sec_data_len;
+ 
+     if (!seg->init_section)
+         return 0;
+@@ -1950,6 +1953,16 @@ static int update_init_section(struct playlist *pls, struct segment *seg)
      return 0;
  }
  
@@ -30,7 +46,16 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
  static int64_t default_reload_interval(struct playlist *pls)
  {
      return pls->n_segments > 0 ?
-@@ -3498,7 +3508,7 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+@@ -3309,7 +3322,7 @@ static int hls_read_header(AVFormatContext *s)
+             pls->input_next_requested = 0;
+             pls->input_next_error = 0;
+             pls->cur_seg_offset = 0;
+-            pls->cur_init_section = NULL;
++            restart_init_section(pls);
+             pls->segment_boundary = 0;
+             /* Reset EOF flag */
+             pls->pb.pub.eof_reached = 0;
+@@ -3498,7 +3511,7 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
                      for (unsigned j = 0; j < pls->ctx->nb_streams; j++)
                          ffstream(pls->ctx->streams[j])->pts_wrap_reference = AV_NOPTS_VALUE;
                  }
@@ -39,7 +64,7 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
              }
              pls->cur_seq_no = select_cur_seq_no(c, pls);
              pls->first_read_seq_no = -1;
-@@ -4167,8 +4177,8 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -4167,8 +4180,8 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
              free_subtitle_cues(pls);
          }
  
