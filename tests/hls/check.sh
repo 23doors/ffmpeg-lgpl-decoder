@@ -2,8 +2,11 @@
 # The fixture checks of patches 0098-0112 (and the I54 trace) against a
 # harness built by setup.sh. Each check prints PASS or FAIL; the exit status
 # is the number of failures. With the series only up to 0097
-# (setup.sh WORKDIR 0097) all but xo-ipv6 and i54 fail (without 0104 the
-# headers go everywhere, IPv6 included).
+# (setup.sh WORKDIR 0097) all fail but xo-ipv6 (without 0104 the headers go
+# everywhere, IPv6 included), the i54 trace, and cut-akamai and trunc-*,
+# which hold what stock FFmpeg does (a placeholder length reconnects; an
+# input that ends where an interrupt cut it ends: 0108 and 0110 without 0112
+# fail it).
 #
 # usage: tests/hls/check.sh WORKDIR [CHECK...]
 #   checks: b19 b20 trunc chunk-trailer id3 i51 i52 init-dedup init-cut
