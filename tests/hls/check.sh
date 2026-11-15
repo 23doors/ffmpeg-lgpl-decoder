@@ -18,10 +18,12 @@
 # 0115 (no init section served before a segment that maps none): it passes
 # up to 0114 too. bad-map fails up to 0116 (the garbled reload failed the
 # playlist as ENOMEM) and up to 0117 (the failed reload's unread rest was
-# read as the next answers: 13 failures, not 3). vod-init-gap and
+# read as the next answers: 13 failures, not 3); cut-reload up to 0117 and
+# with 0118 before it checked the read's error (a cut answer taken whole,
+# no failure). vod-init-gap and
 # vod-init-503 fail up to 0118 (a VOD's init section failure ended it),
 # init-dedup-aes up to 0120 (a keyed section without an IV fetched again on
-# every reload).
+# every reload, and not logged).
 #
 # usage: tests/hls/check.sh WORKDIR [CHECK...]
 #   checks: b19 b20 trunc chunk-trailer sidx id3 i51 i52 bad-map vod-init init-dedup
@@ -209,6 +211,15 @@ check_bad_map() { # 0117, 0118: a garbled EXT-X-MAP on a live reload is played t
     [ "$fails" = 3 ] && grep -q '^maxtime' "$OUT/bad-map.log" && [ "${played:-0}" -gt 200 ] &&
         ! grep -q 'Cannot allocate memory' "$OUT/bad-map.log"
     result bad-map "three garbled reloads: three failures ($fails), played on to the end (s0=${played:-none})" $?
+    # 0118: three live reloads cut half way (the whole Content-Length, half
+    # the answer, the connection closed) fail as I/O errors and are retried,
+    # the previous list kept; before, each truncated list was taken whole
+    run cut-reload "--cut-reload 2:4" /live/index.m3u8 -q -maxtime 10
+    fails=$(grep -c 'Failed to reload playlist 0: Input/output error, retrying' "$OUT/cut-reload.log")
+    played=$(field cut-reload s0)
+    after=$(awk '/cut after/ { c = NR } /GET \/live\/index.m3u8/ && c && NR > c + 1 { n++ } END { print n + 0 }' "$OUT/cut-reload.server.log")
+    [ "$fails" = 3 ] && grep -q '^maxtime' "$OUT/cut-reload.log" && [ "${played:-0}" -gt 200 ] && [ "$after" -ge 3 ]
+    result cut-reload "three reloads cut half way: three I/O failures retried ($fails), $after reloads after them, played on (s0=${played:-none})" $?
 }
 check_vod_init() { # 0119: a finished playlist's init section failure is its segment's
     # (seg_max_retry, seg_skip): retried and skipped, not the playlist's end.
@@ -257,8 +268,9 @@ check_init_dedup() { # 0103: a live playlist's unchanged init section is read on
     req=$(grep -c 'GET /livefmp4aes/init.mp4' "$OUT/dedup-aes.server.log")
     reloads=$(grep -c 'GET /livefmp4aes/index.m3u8' "$OUT/dedup-aes.server.log")
     played=$(field dedup-aes s0)
-    [ "$req" = 1 ] && [ "$reloads" -ge 4 ] && [ "${played:-0}" -gt 100 ]
-    result init-dedup-aes "a keyed init section without an IV requested once over $reloads playlist loads ($req), played (s0=${played:-none})" $?
+    warned=$(grep -c 'encrypted EXT-X-MAP without an IV' "$OUT/dedup-aes.log")
+    [ "$req" = 1 ] && [ "$reloads" -ge 4 ] && [ "${played:-0}" -gt 100 ] && [ "$warned" = 1 ]
+    result init-dedup-aes "a keyed init section without an IV requested once over $reloads playlist loads ($req), played (s0=${played:-none}), logged once ($warned)" $?
 }
 run2() { # 0104's fixture
     # run2 NAME A|B [ORIGIN]: the server on two ports (two origins A and B),

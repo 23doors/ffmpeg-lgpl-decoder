@@ -15,6 +15,9 @@ usage: server.py PORT [options]
   --init-fail N[:CODE]      live fMP4: the first N init section requests answer CODE (503)
   --init-cut N              live fMP4: the first N init section requests send the whole
                             Content-Length, half the section, then the connection closes
+  --cut-reload A:B          /live/index.m3u8: answers A..B (the open's is 1) send
+                            their whole Content-Length, half the playlist, then
+                            the connection closes
   --vod-init-fail N         /vodfmp4/init.mp4: the first N requests answer 503
   --bad-map A:B             live fMP4: playlist answers A..B (the open's is 1) list
                             their EXT-X-MAP with BYTERANGE="-1" (garbled)
@@ -109,6 +112,8 @@ if "--trunc" in opt:
     TRUNC = (int(s_), int(b_), int(ms_))
 INIT_CUT = int(opt.get("--init-cut", "0"))
 LONG = int(opt.get("--long-line", "0"))
+CUT_RELOAD = tuple(int(x) for x in opt["--cut-reload"].split(":")) if "--cut-reload" in opt else None
+live_requests = 0
 VOD_INIT_FAIL = int(opt.get("--vod-init-fail", "0"))
 vod_init_requests = 0
 BAD_MAP = tuple(int(x) for x in opt["--bad-map"].split(":")) if "--bad-map" in opt else None
@@ -267,7 +272,7 @@ class H(BaseHTTPRequestHandler):
             log("  client closed")
 
     def route(self, p):
-        global init_requests, livefmp4_requests, vod_init_requests, aes_init_seq
+        global init_requests, livefmp4_requests, vod_init_requests, aes_init_seq, live_requests
         mpegurl = "application/vnd.apple.mpegurl"
         if p == "/live/master.m3u8":
             return self.send(200, b"#EXTM3U\n"
@@ -484,7 +489,12 @@ class H(BaseHTTPRequestHandler):
                 pl += "#EXTINF:1.000000,\ns%d.%s\n" % (n, "m4s" if fmp4 else "ts")
             if last == NSEG - 1:
                 pl += "#EXT-X-ENDLIST\n"
-            return self.send(200, pl.encode(), "application/vnd.apple.mpegurl")
+            cut = False
+            if p == "/live/index.m3u8":
+                with lock:
+                    live_requests += 1
+                    cut = bool(CUT_RELOAD) and CUT_RELOAD[0] <= live_requests <= CUT_RELOAD[1]
+            return self.send(200, pl.encode(), "application/vnd.apple.mpegurl", cut=cut)
         if p == "/livefmp4/init.mp4":
             with lock:
                 init_requests += 1
