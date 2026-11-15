@@ -1,0 +1,37 @@
+hls: a finished playlist's init section failure is its segment's
+
+0101 makes a live playlist's initialization section failure one of the
+segment it maps: retried seg_max_retry times, then skipped or final as
+seg_skip decides. A finished (VOD) playlist returned the error at once,
+while the same playlist's own segment failures are retried and skipped:
+a 503 once on the init section ended the input at the open, and a
+segment that maps a missing section ended playback there (with 0109 and
+0074, for good).
+
+Take the same path on a finished playlist: segment_failure_is_final()
+decides after the retries (with seg_skip=live a finished playlist's
+failure is final, as for its segments). The skip still drops the skipped
+segment's early open (http_multiple), so the next segment due is asked
+for, not read from that connection.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -2250,11 +2250,12 @@ restart:
+ 
+         /* load/update Media Initialization Section, if any */
+         ret = update_init_section(v, seg);
+-        if (ret < 0 && !v->finished) {
+-            /* On a live playlist, the initialization section's failure is
+-             * one of the segment it maps: retried, skipped and failed for
+-             * good as the segment's own would be (seg_max_retry, seg_skip,
+-             * live_reload_timeout). The next segment asks for it again.
++        if (ret < 0) {
++            /* The initialization section's failure is one of the segment it
++             * maps: retried, skipped and failed for good as the segment's
++             * own would be (seg_max_retry, seg_skip, live_reload_timeout),
++             * on a finished playlist as on a live one. The next segment asks
++             * for it again.
+              * An interrupt is none, also when the callback has dropped by
+              * now: the section is asked for again on the next call. */
+             if (ret == AVERROR_EXIT || ff_check_interrupt(c->interrupt_callback))

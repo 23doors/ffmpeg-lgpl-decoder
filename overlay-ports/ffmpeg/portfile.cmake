@@ -90,6 +90,7 @@ vcpkg_from_github(
         0116-hls-cutoff-drops-untimed-after-dropped.patch
         0117-hls-init-section-list-kept-when-it-cannot-grow.patch
         0118-hls-failed-playlist-load-drops-kept-alive-connection.patch
+        0119-hls-finished-playlist-init-section-failure-is-its-segments.patch
 )
 
 if(SOURCE_PATH MATCHES " ")
