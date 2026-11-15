@@ -110,4 +110,39 @@ if [ ! -f "$M/id3/a9.aac" ]; then
     ffmpeg -nostdin -v error -f lavfi -i sine=f=440:sample_rate=48000 -t 10 -c:a aac -b:a 64k \
         -f segment -segment_time 1 -segment_format adts "$M/id3/a%d.aac"
 fi
+if [ ! -f "$M/mv/a/index.m3u8" ]; then
+    # a multi-variant VOD with a long GOP (6 s, one keyframe at each 6 s
+    # segment's start, B-frames: the keyframe's DTS is 80 ms below its PTS):
+    # two video-only variants v1/v2 with a separate audio rendition a, and two
+    # muxed variants m1/m2 (video and audio in one TS). The audio starts
+    # 0.1 s after the video, so the timeline's first timestamp is the video
+    # keyframe's PTS, above its DTS (as in the trace this fixture is from)
+    rm -rf "$M/mv"
+    for v in v1:320x240 v2:480x360 m1:320x240 m2:480x360; do
+        name=${v%%:*}; size=${v#*:}; mkdir -p "$M/mv/$name"
+        audio=-an; case $name in m*) audio="-c:a aac -b:a 64k";; esac
+        ffmpeg -nostdin -v error -f lavfi -i testsrc=size=$size:rate=25 \
+            -itsoffset 0.1 -f lavfi -i sine=f=440:sample_rate=48000 -t 36 \
+            -c:v libx264 -g 150 -keyint_min 150 -sc_threshold 0 -b:v 300k $audio \
+            -f hls -hls_time 6 -hls_list_size 0 -hls_segment_filename "$M/mv/$name/s%d.ts" "$M/mv/$name/index.m3u8"
+    done
+    # f1, f2: v1 and v2 in fMP4
+    for v in f1:320x240 f2:480x360; do
+        name=${v%%:*}; size=${v#*:}; mkdir -p "$M/mv/$name"
+        ffmpeg -nostdin -v error -f lavfi -i testsrc=size=$size:rate=25 -t 36 \
+            -c:v libx264 -g 150 -keyint_min 150 -sc_threshold 0 -b:v 300k -an \
+            -f hls -hls_time 6 -hls_list_size 0 -hls_segment_type fmp4 -hls_fmp4_init_filename init.mp4 \
+            -hls_segment_filename "$M/mv/$name/s%d.m4s" "$M/mv/$name/index.m3u8"
+    done
+    # n1: no keyframe after the first (an intra-refresh stream's segments
+    # carry none either), cut every 6 s all the same
+    mkdir -p "$M/mv/n1"
+    ffmpeg -nostdin -v error -f lavfi -i testsrc=size=480x360:rate=25 -t 36 \
+        -c:v libx264 -g 10000 -keyint_min 10000 -sc_threshold 0 -b:v 300k -an \
+        -f hls -hls_time 6 -hls_flags split_by_time -hls_list_size 0 \
+        -hls_segment_filename "$M/mv/n1/s%d.ts" "$M/mv/n1/index.m3u8"
+    mkdir -p "$M/mv/a"
+    ffmpeg -nostdin -v error -f lavfi -i sine=f=440:sample_rate=48000 -t 35.9 -c:a aac -b:a 64k \
+        -output_ts_offset 0.1 -f hls -hls_time 6 -hls_list_size 0 -hls_segment_filename "$M/mv/a/s%d.ts" "$M/mv/a/index.m3u8"
+fi
 echo "ready: $W/hlsread (patches up to $LAST)"

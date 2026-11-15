@@ -1,16 +1,20 @@
 #!/bin/sh
-# The fixture checks of patches 0098-0112 (and the I54 trace) against a
+# The fixture checks of patches 0098-0114 (and the I54 trace) against a
 # harness built by setup.sh. Each check prints PASS or FAIL; the exit status
 # is the number of failures. With the series only up to 0097
 # (setup.sh WORKDIR 0097) all fail but xo-ipv6 (without 0104 the headers go
-# everywhere, IPv6 included), the i54 trace, and cut-akamai, trunc-* and
-# sidx, which hold what stock FFmpeg does (a placeholder length reconnects;
-# an input that ends where an interrupt cut it ends: 0108 and 0110 without
-# 0112 fail it; a seekable fragmented MP4 reads with no extra request).
+# everywhere, IPv6 included), the i54 trace, and cut-akamai, trunc-*, sidx
+# and kf-nokey, which hold what stock FFmpeg does (a placeholder length
+# reconnects; an input that ends where an interrupt cut it ends: 0108 and
+# 0110 without 0112 fail it; a seekable fragmented MP4 reads with no extra
+# request; a video without keyframes starts at the position). With the
+# series up to 0112 the vswitch checks fail but kf-nokey; up to 0113, the
+# two that need a playlist read afresh when it is needed again (0114:
+# kf-switch-fmp4, afresh-audio).
 #
 # usage: tests/hls/check.sh WORKDIR [CHECK...]
 #   checks: b19 b20 trunc chunk-trailer sidx id3 i51 i52 init-dedup init-cut
-#           headers-origin i54 cut-body
+#           headers-origin i54 cut-body vswitch
 #   (default: all)
 set -u
 W=$(cd "$1" && pwd); shift
@@ -322,6 +326,87 @@ check_cut_body() { # 0107: a cut body from a server without ranges is not read a
     result cut-aes "the cut AES-128 segment requested once ($req), read on to the end (s19: $after), $got of $full video packets" $?
 }
 
-CHECKS=${*:-b19 b20 trunc chunk_trailer sidx id3 i51 i52 init_dedup init_cut headers_origin i54 cut_body}
+# vswitch's helpers. first NAME STREAM: "pts dts key=K" of the stream's first
+# packet after the events
+first() { grep "^first [0-9]* $2 " "$OUT/$1.log" | head -1 | cut -d' ' -f4-; }
+# keyed NAME STREAM REF REFSTREAM: the stream's first packet after the events
+# is a keyframe, and its packets from there are those of the variant's own
+# playlist read alone after a keyed seek to the same segment (byte for byte)
+keyed() {
+    f=$(first "$1" "$2"); want=$(field "$3" "crca$4"); got=$(field "$1" "crca$2")
+    case "$f" in *key=1) ;; *) return 1;; esac
+    [ -n "$want" ] && [ "$want" != 00000000 ] && [ "$got" = "$want" ]
+}
+# near NAME STREAM LO HI: the stream's first packet after the events has a
+# dts in [LO, HI] s
+near() {
+    d=$(first "$1" "$2" | cut -d' ' -f2)
+    awk -v d="$d" -v lo="$3" -v hi="$4" 'BEGIN { exit !(d != "" && d + 0 >= lo && d + 0 <= hi) }'
+}
+check_vswitch() { # 0113, 0114: a video playlist needed anew starts at its segment's keyframe
+    # media/mv: 6 s segments, a 6 s GOP; the timeline's segment 2 starts at
+    # 13.48 (the video keyframe's PTS; its DTS is 13.40). At 16.12 a player
+    # switches its video (v1 -> v2) or seeks to 16 (RMP: the discards are set
+    # first, the seek follows, stream -1 is RMP's default video or audio).
+    # Streams of master.m3u8: 0 a, 1 a2 (audio renditions), 2 v1, 3 v2.
+    # Before 0113 the new video started on the P-frames at the position
+    # (its playlist's catch-up was AVSEEK_FLAG_ANY), or after the keyframe
+    # at 13.40 that the seek's cutoff at 13.48 dropped.
+    for v in v1 v2 m2 f2; do
+        run "kf-ref-$v" "" "/mv/$v/index.m3u8" -q -ev 1.6:seek:16:0
+    done
+    # a seek on the audio stream: the video playlist is not the seek playlist
+    run kf-seek-audio "" /mv/master.m3u8 -q -discard 1 -discard 3 -ev 16:seek:16:0
+    keyed kf-seek-audio 2 kf-ref-v1 0 && near kf-seek-audio 2 13.3 13.5
+    ok=$?
+    result kf-seek-audio "a seek on the audio: the video from its segment's keyframe ($(first kf-seek-audio 2))" $ok
+    # a switch, then a seek on the new video (it is the seek playlist, but
+    # newly needed: its catch-up replaced the seek's cutoff)
+    run kf-switch-seek "" /mv/master.m3u8 -q -discard 1 -discard 3 -ev 16:off:2 -ev 16:on:3 -ev 16:seek:16:3
+    keyed kf-switch-seek 3 kf-ref-v2 0 && near kf-switch-seek 3 13.3 13.5
+    ok=$?
+    result kf-switch-seek "v1 -> v2 and a seek on v2: v2 from its segment's keyframe ($(first kf-switch-seek 3))" $ok
+    run kf-switch-seek-audio "" /mv/master.m3u8 -q -discard 1 -discard 3 -ev 16:off:2 -ev 16:on:3 -ev 16:seek:16:0
+    keyed kf-switch-seek-audio 3 kf-ref-v2 0 && near kf-switch-seek-audio 3 13.3 13.5
+    ok=$?
+    result kf-switch-seek-audio "v1 -> v2 and a seek on the audio: v2 from its segment's keyframe ($(first kf-switch-seek-audio 3))" $ok
+    # a switch during playback, no seek
+    run kf-switch "" /mv/master.m3u8 -q -discard 1 -discard 3 -ev 16:off:2 -ev 16:on:3
+    keyed kf-switch 3 kf-ref-v2 0 && near kf-switch 3 13.3 13.5
+    ok=$?
+    result kf-switch "v1 -> v2 during playback: v2 from its segment's keyframe ($(first kf-switch 3))" $ok
+    # the same in fMP4 (0114: stock read the probe's stale bytes, and the new
+    # variant gave no packet at all)
+    run kf-switch-fmp4 "" /mv/fmp4.m3u8 -q -discard 2 -ev 16:off:1 -ev 16:on:2
+    keyed kf-switch-fmp4 2 kf-ref-f2 0
+    ok=$?
+    result kf-switch-fmp4 "f1 -> f2 (fMP4) during playback: f2 from its segment's keyframe ($(first kf-switch-fmp4 2))" $ok
+    # muxed variants (streams 0 m1 video, 1 m1 audio, 2 m2 video, 3 m2
+    # audio): the video from its keyframe, the audio still at the position
+    # (not a segment back), and none of the stale probe data (0114)
+    run kf-switch-mux "" /mv/mux.m3u8 -q -discard 2 -discard 3 -ev 16:off:0 -ev 16:off:1 -ev 16:on:2 -ev 16:on:3
+    keyed kf-switch-mux 2 kf-ref-m2 0 && near kf-switch-mux 2 13.3 13.5 && near kf-switch-mux 3 15.8 16.6
+    ok=$?
+    result kf-switch-mux "m1 -> m2 during playback: the video from its segment's keyframe ($(first kf-switch-mux 2)), the audio at the position ($(first kf-switch-mux 3))" $ok
+    # no keyframe flag before the position (n1 has one keyframe, at its
+    # start): the video at the position, as before (not never)
+    run kf-nokey "" /mv/nokey.m3u8 -q -discard 2 -ev 16:off:1 -ev 16:on:2
+    near kf-nokey 2 15.8 16.3
+    ok=$?
+    result kf-nokey "v1 -> n1 (no keyframe): n1 at the position, as stock ($(first kf-nokey 2))" $ok
+    # 0114: an audio rendition taken again during playback starts at the
+    # position (its catch-up stays AVSEEK_FLAG_ANY): the same packets as the
+    # rendition it replaces (the same media) from there, no stale ones from
+    # the open's probe, none corrupt
+    run afresh-ref "" /mv/master.m3u8 -q -discard 1 -discard 3 -ev 16:off:3
+    run afresh-audio "" /mv/master.m3u8 -q -discard 1 -discard 3 -ev 16:off:0 -ev 16:on:1
+    want=$(field afresh-ref crca0); got=$(field afresh-audio crca1)
+    [ -n "$want" ] && [ "$got" = "$want" ] && near afresh-audio 1 15.8 16.3 &&
+        ! grep -q 'hls.*Packet corrupt (stream = 1,' "$OUT/afresh-audio.log"
+    ok=$?
+    result afresh-audio "a -> a2 during playback: a2 at the position ($(first afresh-audio 1)), its packets a's (crc $got, $want)" $ok
+}
+
+CHECKS=${*:-b19 b20 trunc chunk_trailer sidx id3 i51 i52 init_dedup init_cut headers_origin i54 cut_body vswitch}
 for c in $CHECKS; do "check_$(echo "$c" | tr - _)"; done
 exit $FAIL

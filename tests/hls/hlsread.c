@@ -1,6 +1,6 @@
 /* hlsread: read an input with libavformat and report packets.
  * usage: hlsread URL [-o key=value]... [-stallint MS] [-maxtime S] [-q]
- *                    [-pace LEAD [-start S]]
+ *                    [-pace LEAD [-start S]] [-discard N]... [-ev PTS:CMD]...
  *   -stallint MS  the interrupt callback returns 1 once (for 50 ms) when no
  *                 packet came for MS ms: a transient control interrupt that
  *                 recovers; av_read_frame's AVERROR_EXIT is then read past
@@ -9,11 +9,24 @@
  *   -nofsi        no avformat_find_stream_info() (it reads seconds ahead)
  *   -pace LEAD    simulate a player of stream 0 (see below) that reads at
  *                 most LEAD s ahead; -start S: it starts with S s buffered
+ *   -discard N    stream N discarded from the start (AVDISCARD_ALL, set
+ *                 before the first read, as a player that picks its tracks
+ *                 at the open: hls stops reading the playlists of none)
+ *   -ev PTS:CMD   at the first packet at or past PTS seconds (after the
+ *                 events before it), as a player's track switch or seek:
+ *                 off:N / on:N discards stream N or takes it again;
+ *                 seek:T[:S] av_seek_frame() to T s on stream S (default -1,
+ *                 the default stream), AVSEEK_FLAG_BACKWARD. Events of one
+ *                 PTS run in order on the same packet. After them each
+ *                 stream's first packet prints "first <event> <stream>
+ *                 <pts_s> <dts_s> key=<0|1>"; the summary's crcaN covers
+ *                 stream N's packets after the last event
  * Prints per packet "pkt <t_wall> <stream> <pts_s> <size>" (subtitle packets
  * with their text), and a summary: packets per stream, a CRC of each
  * stream's packet data (crcN, the packets in order), the largest pts step
  * of stream 0, the result. Counts and CRCs cover streams 0-15 only (the
- * fixtures have two). */
+ * fixtures have up to six). The streams are listed after the open:
+ * "stream <n> <type> <width>x<height>". */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -87,6 +100,10 @@ static void player_packet(double now, double pts)
 }
 static int stall_ms = -1, interrupts;
 
+/* -ev: the events, in the order given */
+static struct { double at, t; char cmd[8]; int n; } ev[16];
+static int n_ev, ev_next;
+
 static int int_cb(void *opaque)
 {
     int64_t now = av_gettime_relative();
@@ -109,7 +126,8 @@ int main(int argc, char **argv)
     AVPacket *pkt = av_packet_alloc();
     double maxtime = 60;
     int quiet = 0, nofsi = 0, ret, n[16] = { 0 }, exits = 0;
-    uint32_t crc[16] = { 0 };
+    uint32_t crc[16] = { 0 }, crca[16] = { 0 };
+    int discard[16] = { 0 }, seen[16] = { 0 }, epoch = 0;
     const AVCRC *crc_table = av_crc_get_table(AV_CRC_32_IEEE_LE);
     double prev0 = -1, maxstep0 = 0;
     const char *url = argv[1];
@@ -133,6 +151,27 @@ int main(int argc, char **argv)
             pace = atof(argv[++i]);
         } else if (!strcmp(argv[i], "-nofsi")) {
             nofsi = 1;
+        } else if (!strcmp(argv[i], "-discard") && i + 1 < argc) {
+            int k = atoi(argv[++i]);
+            if (k >= 0 && k < 16)
+                discard[k] = 1;
+        } else if (!strcmp(argv[i], "-ev") && i + 1 < argc && n_ev < 16) {
+            char *a = argv[++i], *c = strchr(a, ':');
+            if (!c || sscanf(c + 1, "%7[a-z]", ev[n_ev].cmd) != 1) {
+                fprintf(stderr, "-ev %s: PTS:CMD\n", a);
+                return 2;
+            }
+            ev[n_ev].at = atof(a);
+            c = strchr(c + 1, ':');
+            ev[n_ev].n = -1;
+            if (!strcmp(ev[n_ev].cmd, "seek")) {
+                ev[n_ev].t = c ? atof(c + 1) : 0;
+                if (c && (c = strchr(c + 1, ':')))
+                    ev[n_ev].n = atoi(c + 1);
+            } else if (c) {
+                ev[n_ev].n = atoi(c + 1);
+            }
+            n_ev++;
         } else if (!strcmp(argv[i], "-q")) {
             quiet = 1;
         }
@@ -145,6 +184,9 @@ int main(int argc, char **argv)
         printf("open failed: %s\n", av_err2str(ret));
         return 1;
     }
+    for (int i = 0; i < (int)s->nb_streams && i < 16; i++)
+        if (discard[i])
+            s->streams[i]->discard = AVDISCARD_ALL;
     {
         const AVDictionaryEntry *e = NULL;
         while ((e = av_dict_iterate(opts, e)))
@@ -153,6 +195,11 @@ int main(int argc, char **argv)
     if (!nofsi && (ret = avformat_find_stream_info(s, NULL)) < 0)
         printf("find_stream_info: %s\n", av_err2str(ret));
     printf("opened at %.3f, %d streams\n", (av_gettime_relative() - t0) / 1e6, s->nb_streams);
+    for (int i = 0; i < (int)s->nb_streams; i++) {
+        AVCodecParameters *par = s->streams[i]->codecpar;
+        printf("stream %d %s %dx%d\n", i, av_get_media_type_string(par->codec_type) ?
+               av_get_media_type_string(par->codec_type) : "unknown", par->width, par->height);
+    }
     while (1) {
         double now = (av_gettime_relative() - t0) / 1e6;
         if (now > maxtime) {
@@ -184,9 +231,41 @@ int main(int argc, char **argv)
              * stream's packets only a dts) */
             int64_t ts = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
             double pts = ts == AV_NOPTS_VALUE ? -1 : ts * av_q2d(st->time_base);
+            int fired = 0;
+            /* the events at this packet, run before the next read as a
+             * player runs them; the packet itself is still counted */
+            while (ev_next < n_ev && pts >= ev[ev_next].at) {
+                int k = ev[ev_next].n;
+                if (!strcmp(ev[ev_next].cmd, "seek")) {
+                    int64_t t = k >= 0 && k < (int)s->nb_streams ?
+                                (int64_t)(ev[ev_next].t / av_q2d(s->streams[k]->time_base)) :
+                                (int64_t)(ev[ev_next].t * AV_TIME_BASE);
+                    ret = av_seek_frame(s, k < (int)s->nb_streams ? k : -1, t, AVSEEK_FLAG_BACKWARD);
+                    printf("event %d at %.3f: seek %.3f on %d: %s\n", ev_next, pts, ev[ev_next].t, k,
+                           ret < 0 ? av_err2str(ret) : "ok");
+                } else if (k >= 0 && k < (int)s->nb_streams) {
+                    s->streams[k]->discard = strcmp(ev[ev_next].cmd, "off") ? AVDISCARD_DEFAULT : AVDISCARD_ALL;
+                    printf("event %d at %.3f: %s %d\n", ev_next, pts, ev[ev_next].cmd, k);
+                }
+                ev_next++;
+                fired = 1;
+            }
             if (pkt->stream_index < 16) {
                 n[pkt->stream_index]++;
                 crc[pkt->stream_index] = av_crc(crc_table, crc[pkt->stream_index], pkt->data, pkt->size);
+                if (epoch && !fired) {
+                    crca[pkt->stream_index] = av_crc(crc_table, crca[pkt->stream_index], pkt->data, pkt->size);
+                    if (seen[pkt->stream_index] < epoch) {
+                        seen[pkt->stream_index] = epoch;
+                        printf("first %d %d %.3f %.3f key=%d\n", epoch, pkt->stream_index, pts,
+                               pkt->dts == AV_NOPTS_VALUE ? -1 : pkt->dts * av_q2d(st->time_base),
+                               !!(pkt->flags & AV_PKT_FLAG_KEY));
+                    }
+                }
+            }
+            if (fired) {
+                epoch++;
+                memset(crca, 0, sizeof(crca));
             }
             if (st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE) {
                 printf("pkt %.3f %d %.3f %d \"", now, pkt->stream_index, pts, pkt->size);
@@ -216,6 +295,9 @@ int main(int argc, char **argv)
         printf(" s%d=%d", i, n[i]);
     for (int i = 0; i < (int)s->nb_streams && i < 16; i++)
         printf(" crc%d=%08x", i, crc[i]);
+    if (n_ev)
+        for (int i = 0; i < (int)s->nb_streams && i < 16; i++)
+            printf(" crca%d=%08x", i, crca[i]);
     printf(" last_pts0=%.3f maxstep0=%.3f", prev0, maxstep0);
     if (pace > 0)
         printf(" stalls=%d rebuffer=%.3f", p_stalls, p_rebuf);

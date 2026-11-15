@@ -44,6 +44,14 @@ Paths:
   /prog/akamai.ts   s0..s4 as a live stream from "Server: AkamaiGHost" with
                     its placeholder Content-Length 2147483647, no Accept-Ranges;
                     the connection closes after them (each request alike)
+  /mv/master.m3u8   multi-variant VOD (setup.sh's media/mv), 6 s segments with a 6 s
+                    GOP: video-only variants v1 (320x240) and v2 (480x360), and two
+                    audio renditions a and a2 (the same media under two addresses)
+  /mv/mux.m3u8      the same with muxed variants m1 and m2 (video and audio in one TS)
+  /mv/nokey.m3u8    v1 and n1 (480x360, no keyframe after its first) with the audio a
+  /mv/fmp4.m3u8     the video-only variants in fMP4 (f1, f2, EXT-X-MAP) with the audio a
+  /mv/NAME/...      the media playlists, init sections and segments of v1, v2, m1, m2, n1,
+                    f1, f2, a (a2 is a)
   /xo/index.m3u8    VOD TS on either port: s0 here, s2 by a redirect to the
                     other port, s1 on the other port (a new request on the
                     connection that redirect left open), s3 by a redirect to
@@ -283,6 +291,40 @@ class H(BaseHTTPRequestHandler):
             ts = 900000 + n * 90000 + (100 * 90000 if n == 5 else 0)
             body = id3_timestamp(ts) + open(os.path.join(D, "id3", "a%d.aac" % n), "rb").read()
             return self.send(200, body, "audio/aac", stall)
+        if p == "/mv/master.m3u8":
+            pl = ('#EXTM3U\n'
+                  '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="one",LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES,URI="a/index.m3u8"\n'
+                  '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="two",LANGUAGE="de",DEFAULT=NO,AUTOSELECT=YES,URI="a2/index.m3u8"\n'
+                  '#EXT-X-STREAM-INF:BANDWIDTH=400000,RESOLUTION=320x240,CODECS="avc1.64000d,mp4a.40.2",AUDIO="aud"\nv1/index.m3u8\n'
+                  '#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=480x360,CODECS="avc1.64001e,mp4a.40.2",AUDIO="aud"\nv2/index.m3u8\n')
+            return self.send(200, pl.encode(), mpegurl)
+        if p == "/mv/mux.m3u8":
+            pl = ('#EXTM3U\n'
+                  '#EXT-X-STREAM-INF:BANDWIDTH=400000,RESOLUTION=320x240\nm1/index.m3u8\n'
+                  '#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=480x360\nm2/index.m3u8\n')
+            return self.send(200, pl.encode(), mpegurl)
+        if p == "/mv/nokey.m3u8":
+            pl = ('#EXTM3U\n'
+                  '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="one",DEFAULT=YES,AUTOSELECT=YES,URI="a/index.m3u8"\n'
+                  '#EXT-X-STREAM-INF:BANDWIDTH=400000,RESOLUTION=320x240,AUDIO="aud"\nv1/index.m3u8\n'
+                  '#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=480x360,AUDIO="aud"\nn1/index.m3u8\n')
+            return self.send(200, pl.encode(), mpegurl)
+        if p == "/mv/fmp4.m3u8":
+            pl = ('#EXTM3U\n'
+                  '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="one",DEFAULT=YES,AUTOSELECT=YES,URI="a/index.m3u8"\n'
+                  '#EXT-X-STREAM-INF:BANDWIDTH=400000,RESOLUTION=320x240,AUDIO="aud"\nf1/index.m3u8\n'
+                  '#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=480x360,AUDIO="aud"\nf2/index.m3u8\n')
+            return self.send(200, pl.encode(), mpegurl)
+        if p.startswith("/mv/"):
+            name, f = p[len("/mv/"):].split("/", 1)
+            if name == "a2":
+                name = "a"
+            if name in ("v1", "v2", "m1", "m2", "n1", "f1", "f2", "a") and f.replace(".", "").isalnum():
+                path = os.path.join(D, "mv", name, f)
+                if os.path.isfile(path):
+                    ctype = {"m3u8": mpegurl, "ts": "video/mp2t", "mp4": "video/mp4"}.get(
+                        f.rsplit(".", 1)[-1], "video/iso.segment")
+                    return self.send(200, open(path, "rb").read(), ctype)
         if p.startswith("/xo/"):
             me = self.server.server_address[1]
             other = [x for x in PORTS if x != me][0] if len(PORTS) > 1 else me
