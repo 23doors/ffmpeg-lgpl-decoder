@@ -1,0 +1,210 @@
+hls: a video playlist needed anew starts at its segment's keyframe
+
+A playlist that becomes needed during playback (another video variant
+selected, with or without a seek after it) caught up with
+AVSEEK_FLAG_ANY from the current position: its first packets were the
+frames after the segment's keyframe. The same held for a needed video
+playlist that is not the seek playlist (a seek on the audio stream).
+For a playlist that is the seek playlist and becomes needed on the read
+after the seek (a player sets the discards, then seeks), the catch-up
+replaced the seek's keyed cutoff, which 0065 had relaxed by a segment,
+with an unrelaxed one: the keyframe's DTS is below the EXTINF-derived
+segment start whenever the timeline's first timestamp is a keyframe's
+PTS, so it was dropped too. A software decoder hides the frames that
+follow until the next keyframe (a GOP later, 6 s on some servers); a
+hardware decoder fails on them (VideoToolbox: "co located POCs
+unavailable").
+
+A VOD playlist that brings a needed video stream now starts it at the
+keyframe of the segment holding the position, as a backward seek on its
+own video stream does: reading starts at that segment, the cutoff is a
+segment early, and keyframes only. The caller gets up to a segment of
+frames before the position, which it drops as after any seek. Without a
+keyframe flag before the position (a segment that does not start with
+one, an intra-refresh stream), the video starts at the position, as
+before. The playlist's other streams (a muxed variant's audio) still
+start at the position: up to the first of their packets there, or the
+video past its segment, earlier ones are dropped, so audio does not go
+back. Live playlists, and playlists without a video stream (audio
+renditions, packed audio, subtitles), keep the AVSEEK_FLAG_ANY catch-up;
+nothing changes without a seek or a newly needed playlist.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -221,6 +221,15 @@ struct playlist {
+      * packet anchors it again. */
+     int anchor_lost;
+     int seek_stream_index; /* into subdemuxer stream array */
++    /* A playlist whose video stream catch_up_from_keyframe() started at its
++     * segment's keyframe: the position it caught up to and where that
++     * segment ends (AV_TIME_BASE, on the playlist's own baseline;
++     * AV_NOPTS_VALUE: none), that video stream (subdemuxer index), and
++     * whether the other streams are still held back to the position. */
++    int64_t catchup_ts;
++    int64_t catchup_end;
++    int catchup_stream;
++    int catchup_others;
+ 
+     /* Renditions associated with this playlist, if any.
+      * Alternative rendition playlists have a single rendition associated
+@@ -466,6 +475,7 @@ static struct playlist *new_playlist(HLSContext *c, const char *url,
+     pls->ts_offset = AV_NOPTS_VALUE;
+     pls->last_cue_pts = AV_NOPTS_VALUE;
+     pls->seek_timestamp = AV_NOPTS_VALUE;
++    pls->catchup_ts = AV_NOPTS_VALUE;
+     pls->first_read_seq_no = -1;
+     pls->anchor_ts = AV_NOPTS_VALUE;
+     pls->anchor_pending_seq_no = -1;
+@@ -2846,6 +2856,54 @@ static int find_timestamp_in_playlist(HLSContext *c, struct playlist *pls,
+     return 0;
+ }
+ 
++/* The playlist's needed video stream (its subdemuxer index), or -1. */
++static int needed_video_stream(const struct playlist *pls)
++{
++    for (int j = 0; j < pls->n_main_streams; j++) {
++        const AVStream *st = pls->main_streams[j];
++        if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
++            !(st->disposition & AV_DISPOSITION_ATTACHED_PIC) &&
++            st->discard < AVDISCARD_ALL)
++            return j;
++    }
++    return -1;
++}
++
++/* Start a VOD playlist's video stream (vid) at the keyframe that begins the
++ * segment holding timestamp, not at the first packet at timestamp: the
++ * frames after a keyframe cannot be decoded without it (a hardware decoder
++ * fails on them, a software one hides them until the next keyframe, up to a
++ * GOP later). As a seek on the playlist's own video stream does (the cutoff
++ * a segment early: the keyframe's DTS may be below the EXTINF-derived start,
++ * and reading starts at the segment anyway), so the caller gets up to a
++ * segment of frames before timestamp, which it drops as after any seek.
++ * A video stream with no keyframe flag before timestamp (a segment that
++ * does not start with one, an intra-refresh stream) starts at timestamp,
++ * and the playlist's other streams do, as before. Returns 0 when timestamp
++ * is past the playlist's end. */
++static int catch_up_from_keyframe(HLSContext *c, struct playlist *pls, int vid,
++                                  int64_t timestamp)
++{
++    int64_t offset = pls->ts_offset != AV_NOPTS_VALUE ? pls->ts_offset : 0;
++    int64_t seq_no, seg_start, idx, duration;
++
++    if (!find_timestamp_in_playlist(c, pls, timestamp, &seq_no, &seg_start))
++        return 0;
++    idx = seq_no - pls->start_seq_no;
++    if (idx < 0 || idx >= pls->n_segments)
++        return 0;
++    duration = pls->segments[idx]->duration;
++    pls->cur_seq_no        = seq_no;
++    pls->seek_timestamp    = av_sat_add64(av_sat_sub64(seg_start, duration), offset);
++    pls->seek_flags        = AVSEEK_FLAG_BACKWARD;
++    pls->seek_stream_index = vid;
++    pls->catchup_stream    = vid;
++    pls->catchup_ts        = av_sat_add64(timestamp, offset);
++    pls->catchup_end       = av_sat_add64(av_sat_add64(seg_start, duration), offset);
++    pls->catchup_others    = 1;
++    return 1;
++}
++
+ static int64_t select_cur_seq_no(HLSContext *c, struct playlist *pls)
+ {
+     int64_t seq_no;
+@@ -3431,12 +3489,21 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+             pls->segment_boundary = 0;
+             pls->pb.pub.eof_reached = 0;
+             pls->pb.pub.error = 0;
++            pls->catchup_ts = AV_NOPTS_VALUE;
+             if (c->cur_timestamp != AV_NOPTS_VALUE) {
+-                /* catch up */
+-                pls->seek_timestamp = av_sat_add64(c->cur_timestamp,
+-                    pls->ts_offset != AV_NOPTS_VALUE ? pls->ts_offset : 0);
+-                pls->seek_flags = AVSEEK_FLAG_ANY;
+-                pls->seek_stream_index = -1;
++                /* A VOD playlist that brings a video stream (another
++                 * variant, after a seek or during playback) starts it at its
++                 * segment's keyframe; a seek's keyed cutoff on it would be
++                 * replaced here. */
++                int vid = needed_video_stream(pls);
++                if (vid < 0 || !pls->finished ||
++                    !catch_up_from_keyframe(c, pls, vid, c->cur_timestamp)) {
++                    /* catch up */
++                    pls->seek_timestamp = av_sat_add64(c->cur_timestamp,
++                        pls->ts_offset != AV_NOPTS_VALUE ? pls->ts_offset : 0);
++                    pls->seek_flags = AVSEEK_FLAG_ANY;
++                    pls->seek_stream_index = -1;
++                }
+             }
+             av_log(s, AV_LOG_INFO, "Now receiving playlist %d, segment %"PRId64"\n", i, pls->cur_seq_no);
+         } else if ((first || pls->is_subtitle) && !cur_needed && pls->needed) {
+@@ -3705,6 +3772,27 @@ retry:
+                     }
+                 }
+ 
++                /* After a catch-up from the video's keyframe, the other
++                 * streams start at the position, as they did before (a muxed
++                 * variant's audio would go back by up to a segment): until
++                 * the first of them gets there, or the video past its
++                 * segment. A packet without a timestamp then is the rest of
++                 * a PES whose start was dropped. */
++                if (pls->catchup_ts != AV_NOPTS_VALUE && pls->catchup_others) {
++                    int64_t t = pls->pkt->dts == AV_NOPTS_VALUE ? AV_NOPTS_VALUE :
++                                av_rescale_q_rnd(pls->pkt->dts, get_timebase(pls),
++                                                 AV_TIME_BASE_Q, AV_ROUND_DOWN);
++                    if (pls->pkt->stream_index == pls->catchup_stream) {
++                        if (t != AV_NOPTS_VALUE && t >= pls->catchup_end)
++                            pls->catchup_others = 0;
++                    } else if (t == AV_NOPTS_VALUE || t < pls->catchup_ts) {
++                        av_packet_unref(pls->pkt);
++                        continue;
++                    } else {
++                        pls->catchup_others = 0;
++                    }
++                }
++
+                 if (pls->seek_timestamp == AV_NOPTS_VALUE)
+                     break;
+ 
+@@ -3725,6 +3813,13 @@ retry:
+                         pls->seek_timestamp = AV_NOPTS_VALUE;
+                         break;
+                     }
++                    /* A catch-up that met no keyframe flag before the
++                     * position takes the video from there, as before. */
++                    if (pls->catchup_ts != AV_NOPTS_VALUE &&
++                        av_sat_add64(ts_diff, pls->seek_timestamp) >= pls->catchup_ts) {
++                        pls->seek_timestamp = AV_NOPTS_VALUE;
++                        break;
++                    }
+                     /* a cue still shown at the target is delivered, the cues
+                      * after it may still have ended before the target */
+                     if (pls->is_subtitle && pls->pkt->duration > 0 &&
+@@ -4053,6 +4148,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+         /* Reset the init segment so it's re-fetched and served appropriately */
+         pls->cur_init_section = NULL;
+         pls->segment_boundary = 0;
++        pls->catchup_ts = AV_NOPTS_VALUE;
+ 
+         /* The discard in hls_read_packet compares this playlist's packet DTS
+          * against seek_timestamp, but seek_timestamp is on c->first_timestamp's
+@@ -4094,6 +4190,19 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+                 pls->seek_timestamp = av_sat_sub64(pls->seek_timestamp, pls->segments[idx]->duration);
+         }
+ 
++        if (pls != seek_pls && pls->seek_timestamp != AV_NOPTS_VALUE &&
++            (flags & AVSEEK_FLAG_BACKWARD) && !(flags & AVSEEK_FLAG_ANY)) {
++            /* A video stream of another playlist (the seek was on an audio
++             * stream, or two video renditions are read) starts at its
++             * segment's keyframe as the seek playlist's does, not on the
++             * frames after it. */
++            int vid = needed_video_stream(pls);
++            if (vid >= 0 && catch_up_from_keyframe(c, pls, vid, seek_timestamp)) {
++                pls->last_seq_no = pls->cur_seq_no;
++                continue;
++            }
++        }
++
+         if (pls != seek_pls) {
+             /* set closest segment seq_no for playlists not handled above */
+             find_timestamp_in_playlist(c, pls, seek_timestamp, &pls->cur_seq_no, NULL);

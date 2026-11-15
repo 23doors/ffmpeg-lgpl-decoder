@@ -84,6 +84,7 @@ vcpkg_from_github(
         0110-mpegts-interrupted-packet-read-again.patch
         0111-mov-interrupted-root-read-again.patch
         0112-hls-interrupt-latch-cleared-at-the-end.patch
+        0113-hls-new-video-playlist-from-segment-keyframe.patch
 )
 
 if(SOURCE_PATH MATCHES " ")
