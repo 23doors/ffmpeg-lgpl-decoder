@@ -46,7 +46,9 @@ check_b20() { # 0099: an interrupt during a segment's body loses nothing
     run b20-ref "" /vod/index.m3u8 -q
     run b20 "--stall 12:15000:1500" /vod/index.m3u8 -q -stallint 300
     ref=$(field b20-ref s0); got=$(field b20 s0); ex=$(field b20 exits); step=$(field b20 maxstep0)
-    [ "$ex" -ge 1 ] && [ "$got" = "$ref" ] && [ "$(echo "$step < 0.25" | bc)" = 1 ]
+    # any number of interrupts from one on; no packet lost, no gap
+    [ "${ex:-0}" -ge 1 ] && [ -n "$ref" ] && [ "$got" = "$ref" ] &&
+        awk -v s="$step" 'BEGIN { exit !(s != "" && s + 0 < 0.25) }'
     result b20 "interrupted ($ex), all $ref video packets ($got), no gap (largest step $step s)" $?
 }
 check_i51() { # 0100: a cut address line fails the load with a log
