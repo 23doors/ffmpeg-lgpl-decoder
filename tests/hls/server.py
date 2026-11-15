@@ -18,6 +18,8 @@ usage: server.py PORT [options]
   --cut-reload A:B          /live/index.m3u8: answers A..B (the open's is 1) send
                             their whole Content-Length, half the playlist, then
                             the connection closes
+  --stall-reload N:MS       /live/index.m3u8: answer N (the open's is 1) sends its
+                            headers, then waits MS ms before the body
   --vod-init-fail N         /vodfmp4/init.mp4: the first N requests answer 503
   --bad-map A:B             live fMP4: playlist answers A..B (the open's is 1) list
                             their EXT-X-MAP with BYTERANGE="-1" (garbled)
@@ -114,6 +116,7 @@ INIT_CUT = int(opt.get("--init-cut", "0"))
 LONG = int(opt.get("--long-line", "0"))
 CUT_RELOAD = tuple(int(x) for x in opt["--cut-reload"].split(":")) if "--cut-reload" in opt else None
 live_requests = 0
+STALL_RELOAD = tuple(int(x) for x in opt["--stall-reload"].split(":")) if "--stall-reload" in opt else None
 VOD_INIT_FAIL = int(opt.get("--vod-init-fail", "0"))
 vod_init_requests = 0
 BAD_MAP = tuple(int(x) for x in opt["--bad-map"].split(":")) if "--bad-map" in opt else None
@@ -490,11 +493,14 @@ class H(BaseHTTPRequestHandler):
             if last == NSEG - 1:
                 pl += "#EXT-X-ENDLIST\n"
             cut = False
+            pstall = None
             if p == "/live/index.m3u8":
                 with lock:
                     live_requests += 1
                     cut = bool(CUT_RELOAD) and CUT_RELOAD[0] <= live_requests <= CUT_RELOAD[1]
-            return self.send(200, pl.encode(), "application/vnd.apple.mpegurl", cut=cut)
+                    if STALL_RELOAD and live_requests == STALL_RELOAD[0]:
+                        pstall = (0, STALL_RELOAD[1])
+            return self.send(200, pl.encode(), "application/vnd.apple.mpegurl", cut=cut, stall=pstall)
         if p == "/livefmp4/init.mp4":
             with lock:
                 init_requests += 1

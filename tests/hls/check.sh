@@ -20,7 +20,9 @@
 # playlist as ENOMEM) and up to 0117 (the failed reload's unread rest was
 # read as the next answers: 13 failures, not 3); cut-reload up to 0117 and
 # with 0118 before it checked the read's error (a cut answer taken whole,
-# no failure). vod-init-gap and
+# no failure); stall-reload up to 0117 and with 0118 before an interrupted
+# load stamped no reload time (it failed as INVALIDDATA, asked for again a
+# reload interval later). vod-init-gap and
 # vod-init-503 fail up to 0118 (a VOD's init section failure ended it),
 # init-dedup-aes up to 0120 (a keyed section without an IV fetched again on
 # every reload, and not logged).
@@ -218,8 +220,20 @@ check_bad_map() { # 0117, 0118: a garbled EXT-X-MAP on a live reload is played t
     fails=$(grep -c 'Failed to reload playlist 0: Input/output error, retrying' "$OUT/cut-reload.log")
     played=$(field cut-reload s0)
     after=$(awk '/cut after/ { c = NR } /GET \/live\/index.m3u8/ && c && NR > c + 1 { n++ } END { print n + 0 }' "$OUT/cut-reload.server.log")
-    [ "$fails" = 3 ] && grep -q '^maxtime' "$OUT/cut-reload.log" && [ "${played:-0}" -gt 200 ] && [ "$after" -ge 3 ]
-    result cut-reload "three reloads cut half way: three I/O failures retried ($fails), $after reloads after them, played on (s0=${played:-none})" $?
+    [ "$fails" = 3 ] && grep -q '^maxtime' "$OUT/cut-reload.log" && [ "${played:-0}" -gt 200 ] && [ "$after" -ge 3 ] &&
+        ! grep -q 'skipping .* segments ahead' "$OUT/cut-reload.log"
+    result cut-reload "three reloads cut half way: three I/O failures retried ($fails), the previous list kept (no segments skipped), $after reloads after them, played on (s0=${played:-none})" $?
+    # 0118: a reload interrupted (a stall past the interrupt callback) is no
+    # load: it fails as AVERROR_EXIT, not INVALIDDATA from the empty first
+    # line, and does not stamp last_load_time, so the playlist is asked for
+    # again at once (before, a reload interval after the stalled request)
+    run stall-reload "--stall-reload 4:4000" /live/index.m3u8 -q -nofsi -maxtime 12 -stallint 1500
+    gap=$(awk '/stall [0-9]+ ms before the body/ { s = t } /GET \/live\/index.m3u8/ { if (s != "" && g == "") g = $1 - s; t = $1 } END { print g }' "$OUT/stall-reload.server.log")
+    played=$(field stall-reload s0)
+    grep -q '^interrupt at' "$OUT/stall-reload.log" && ! grep -q 'Failed to reload playlist' "$OUT/stall-reload.log" &&
+        grep -q '^maxtime' "$OUT/stall-reload.log" && [ "${played:-0}" -gt 200 ] &&
+        awk -v g="$gap" 'BEGIN { exit !(g != "" && g + 0 < 0.85) }'
+    result stall-reload "a reload stalled and interrupted: no failure logged, asked for again ${gap:-never} s after the stalled request, played on (s0=${played:-none})" $?
 }
 check_vod_init() { # 0119: a finished playlist's init section failure is its segment's
     # (seg_max_retry, seg_skip): retried and skipped, not the playlist's end.
@@ -263,12 +277,13 @@ check_init_dedup() { # 0103: a live playlist's unchanged init section is read on
     req=$(grep -c 'GET /livefmp4/init.mp4' "$OUT/dedup.server.log")
     [ "$req" = 1 ]; result init-dedup "the init section requested once in 5 s of reloads ($req)" $?
     # 0121: an AES-128 init section whose EXT-X-KEY has no IV (its IV is the
-    # media sequence number at the MAP line, which moves with each reload)
+    # media sequence number of the segment after the MAP line, which moves
+    # with each reload)
     run dedup-aes "" /livefmp4aes/index.m3u8 -q -maxtime 6
     req=$(grep -c 'GET /livefmp4aes/init.mp4' "$OUT/dedup-aes.server.log")
     reloads=$(grep -c 'GET /livefmp4aes/index.m3u8' "$OUT/dedup-aes.server.log")
     played=$(field dedup-aes s0)
-    warned=$(grep -c 'encrypted EXT-X-MAP without an IV' "$OUT/dedup-aes.log")
+    warned=$(grep -c 'AES-128 EXT-X-MAP without an IV' "$OUT/dedup-aes.log")
     [ "$req" = 1 ] && [ "$reloads" -ge 4 ] && [ "${played:-0}" -gt 100 ] && [ "$warned" = 1 ]
     result init-dedup-aes "a keyed init section without an IV requested once over $reloads playlist loads ($req), played (s0=${played:-none}), logged once ($warned)" $?
 }
