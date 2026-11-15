@@ -13,10 +13,15 @@ Keep the line read so far in the context and go on with it on the next
 read; it is reset with the reply's headers. Replies with a Content-Length
 are not affected.
 
+The line after the last chunk (the reply's end on a connection kept for
+the next request, as hls's segments are) is read the same way: an
+interrupt in it left its CR LF unread, and the next reply on the
+connection took it for its status line.
+
 diff --git a/libavformat/http.c b/libavformat/http.c
 --- a/libavformat/http.c
 +++ b/libavformat/http.c
-@@ -78,6 +78,10 @@ typedef struct HTTPContext {
+@@ -78,6 +78,14 @@ typedef struct HTTPContext {
      /* Used if "Transfer-Encoding: chunked" otherwise -1. */
      uint64_t chunksize;
      int chunkend;
@@ -24,18 +29,23 @@ diff --git a/libavformat/http.c b/libavformat/http.c
 +     * caller's interrupt callback), so that the next read goes on with it. */
 +    char chunk_line[32];
 +    int chunk_line_len;
++    /* The last chunk was read and the line after it is still to come (a
++     * reply on a connection kept for the next request), read as the size
++     * line is. */
++    int chunk_trailer;
      uint64_t off, end_off, filesize, range_end;
      char *uri;
      char *location;
-@@ -1511,6 +1515,7 @@ static int http_read_header(URLContext *h)
+@@ -1511,6 +1519,8 @@ static int http_read_header(URLContext *h)
      av_freep(&s->new_location);
      s->expires = 0;
      s->chunksize = UINT64_MAX;
 +    s->chunk_line_len = 0;
++    s->chunk_trailer = 0;
      s->filesize_from_content_range = UINT64_MAX;
  
      for (;;) {
-@@ -1807,12 +1812,26 @@ static int http_buf_read(URLContext *h, uint8_t *buf, int size)
+@@ -1807,12 +1817,31 @@ static int http_buf_read(URLContext *h, uint8_t *buf, int size)
          }
          if (!s->chunksize) {
              char line[32];
@@ -62,9 +72,27 @@ diff --git a/libavformat/http.c b/libavformat/http.c
 +                memcpy(line, s->chunk_line, s->chunk_line_len);
 +                line[s->chunk_line_len] = '\0';
 +                s->chunk_line_len = 0;
++                if (s->chunk_trailer) {
++                    s->chunk_trailer = 0;
++                    s->chunkend = 1;
++                    return 0;
++                }
 +                if (*line)
 +                    break;       /* skip CR LF from last chunk */
 +            }
  
              s->chunksize = strtoull(line, NULL, 16);
  
+@@ -1821,9 +1850,9 @@ static int http_buf_read(URLContext *h, uint8_t *buf, int size)
+                     s->chunksize);
+ 
+             if (!s->chunksize && s->multiple_requests) {
+-                http_get_line(s, line, sizeof(line)); // read empty chunk
+-                s->chunkend = 1;
+-                return 0;
++                /* the line after it, kept across an interrupt as this one */
++                s->chunk_trailer = 1;
++                return http_buf_read(h, buf, size);
+             }
+             else if (!s->chunksize) {
+                 av_log(h, AV_LOG_DEBUG, "Last chunk received, closing conn\n");
