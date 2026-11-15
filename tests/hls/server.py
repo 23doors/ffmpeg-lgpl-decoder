@@ -73,6 +73,10 @@ Paths:
   /range/file.ts    /prog/file.ts with byte ranges (a Range gets 206), kept alive
   /rd/file.ts       on the first port (origin A): a redirect (302) to /range/file.ts
                     on the second (B)
+  /rdc/file.ts?[c=SET-COOKIE][&h=HOST]  a redirect (with that Set-Cookie) to
+                    /range/file.ts on HOST (127.0.0.1) at the second port
+A request in a proxy's form (the whole URL) is served as its path, logged
+"proxied".
   /xo/index.m3u8    VOD TS on either port: s0 here, s2 by a redirect to the
                     other port, s1 on the other port (a new request on the
                     connection that redirect left open), s3 by a redirect to
@@ -83,6 +87,7 @@ and Cookie (spaces removed) when it had them, and its Host.
 Every request is logged with its time since start (seconds) to stdout.
 """
 import sys, time, os, threading, socket, subprocess
+import sys, time, os, threading, socket, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # the media setup.sh generates (WORKDIR/media)
@@ -299,6 +304,11 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        # a request through a proxy names the whole URL: served as the path
+        # (this server is the proxy and the origin)
+        proxied = self.path.startswith("http://")
+        if proxied:
+            self.path = "/" + self.path.split("/", 3)[3]
         p = self.path.split("?")[0]
         port = self.server.server_address[1]
         log("GET %s port=%d token=%s conn=%d%s%s host=%s" % (
@@ -307,7 +317,7 @@ class H(BaseHTTPRequestHandler):
             self.client_address[1],
             " range=" + self.headers["Range"] if self.headers.get("Range") else "",
             " cookie=" + self.headers["Cookie"].replace(" ", "") if self.headers.get("Cookie") else "",
-            self.headers.get("Host", "-")))
+            self.headers.get("Host", "-") + (" proxied" if proxied else "")))
         try:
             self.route(p)
         except (BrokenPipeError, ConnectionResetError):
@@ -425,7 +435,9 @@ class H(BaseHTTPRequestHandler):
         if p.startswith("/xo/"):
             me = self.server.server_address[1]
             other = [x for x in PORTS if x != me][0] if len(PORTS) > 1 else me
-            o = "http://%s:%d/xo/" % ("[::1]" if IPV6 else "127.0.0.1", other)
+            # index.m3u8?h=HOST: the other port's segments named on HOST
+            q = urllib.parse.parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
+            o = "http://%s:%d/xo/" % ("[::1]" if IPV6 else q.get("h", ["127.0.0.1"])[0], other)
             if p == "/xo/index.m3u8":
                 pl = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-MEDIA-SEQUENCE:0\n"
                 for u in ["s0.ts", "r2.ts", o + "s1.ts", "rb3.ts", "s4.ts"]:
@@ -477,6 +489,18 @@ class H(BaseHTTPRequestHandler):
             # the same file on B
             other = PORTS[1] if len(PORTS) > 1 else PORTS[0]
             return self.redirect("http://127.0.0.1:%d/range/%s" % (other, p[len("/rd/"):]))
+        if p == "/rdc/file.ts":
+            # ?c=SET-COOKIE&h=HOST: a redirect (with that Set-Cookie) to
+            # /range/file.ts on HOST (default 127.0.0.1) at the second port
+            q = urllib.parse.parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
+            other = PORTS[1] if len(PORTS) > 1 else PORTS[0]
+            self.send_response(302)
+            self.send_header("Location", "http://%s:%d/range/file.ts" % (q.get("h", ["127.0.0.1"])[0], other))
+            if "c" in q:
+                self.send_header("Set-Cookie", q["c"][0])
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if p == "/range/file.ts":
             return self.send_range(b"".join(open(os.path.join(D, "ts", "s%d.ts" % n), "rb").read()
                                             for n in range(5)), "video/mp2t")

@@ -29,7 +29,7 @@
 #
 # usage: tests/hls/check.sh WORKDIR [CHECK...]
 #   checks: b19 b20 trunc chunk-trailer sidx id3 i51 i52 bad-map vod-init init-dedup init-cut
-#           headers-origin i54 cut-body vswitch conn-host
+#           headers-origin i54 cut-body vswitch conn-host cookies
 #   (default: all)
 set -u
 W=$(cd "$1" && pwd); shift
@@ -409,7 +409,8 @@ check_cut_body() { # 0107: a cut body from a server without ranges is not read a
 }
 
 # runh NAME "server args" PATH [httpread args]: httpread on PATH of origin A,
-# server.py on two ports (A_PORT, B_PORT: origins A and B); the logs as run's
+# server.py on two ports (A_PORT, B_PORT: origins A and B); the logs as run's;
+# HOST: the address asked for (127.0.0.1)
 runh() {
     name=$1; sargs=$2; path=$3; shift 3
     PORT=$((PORT + 2)); A_PORT=$((PORT - 1)); B_PORT=$PORT
@@ -419,7 +420,7 @@ runh() {
     until grep -q listening "$OUT/$name.server.log" 2>/dev/null || [ $i -ge 50 ]; do
         sleep 0.1; i=$((i + 1))
     done
-    cap "$W/httpread" "http://127.0.0.1:$A_PORT$path" "$@" > "$OUT/$name.log" 2>&1
+    cap "$W/httpread" "http://${HOST:-127.0.0.1}:$A_PORT$path" "$@" > "$OUT/$name.log" 2>&1
     kill $srv 2>/dev/null; wait $srv 2>/dev/null
 }
 # readcrc NAME K: the CRC of httpread's K-th read
@@ -440,6 +441,93 @@ check_conn_host() { # 0118 (b66d2aca0f): a kept-alive connection serves only its
     want=$(readcrc conn-host-ref 2); got=$(readcrc conn-host 2)
     [ "$on_a" = 2 ] && [ "$on_b" = 0 ] && [ "$leak" = 0 ] && [ -n "$want" ] && [ "$got" = "$want" ]
     result conn-host "A's URL asked of A after the seek ($on_a on A, $on_b on B's connection), the token never to B ($leak), the bytes after the seek right ($got, $want)" $?
+}
+
+# cookie NAME PORT PATH: the Cookie of the (first) request for PATH on PORT
+# ("-" without one, nothing when there was no such request)
+cookie() {
+    grep "GET $3 port=$2 " "$OUT/$1.server.log" | head -1 |
+        sed -n 's/.* cookie=\([^ ]*\) .*/\1/p; t; s/.*GET .*/-/p'
+}
+NL='
+'
+check_cookies() { # 0119-0130: the cookie series (88fbd111ea ... de6fb646f7)
+    # 0119: a Domain is matched against the host, not host:port (a cookie
+    # with a Domain never went to a URL with a port)
+    runh ck-port "" /range/file.ts -direct -o "cookies=d=1; Domain=127.0.0.1; Path=/" r:1000
+    c=$(cookie ck-port $A_PORT /range/file.ts)
+    [ "$c" = d=1 ]; result cookie-port "Domain=127.0.0.1 goes to 127.0.0.1:port ($c)" $?
+    # 0120: a Domain matches only at a label boundary (Domain=calhost went
+    # to localhost)
+    HOST=localhost runh ck-label "" /range/file.ts -direct \
+        -o "cookies=l=1; Domain=calhost; Path=/${NL}m=1; Domain=localhost; Path=/" r:1000
+    c=$(cookie ck-label $A_PORT /range/file.ts)
+    [ "$c" = m=1 ]; result cookie-label "Domain=calhost not to localhost, Domain=localhost to it ($c)" $?
+    # 0121: a Path matches only at a segment boundary (Path=/ran went to /range/)
+    runh ck-segment "" /range/file.ts -direct -o "cookies=p=1; Path=/ran${NL}q=1; Path=/range" r:1000
+    c=$(cookie ck-segment $A_PORT /range/file.ts)
+    [ "$c" = q=1 ]; result cookie-segment "Path=/ran not to /range/, Path=/range to it ($c)" $?
+    # 0122: a cookie a reply sets without a Domain goes back only to its host
+    # (127.0.0.1's session cookie went to localhost after its redirect there;
+    # cookies are scoped by host, not port)
+    runh ck-set-hostonly "" "/rdc/file.ts?c=sess%3Dabc%3B%20Path%3D%2F&h=localhost" -direct r:1000
+    c=$(cookie ck-set-hostonly $B_PORT /range/file.ts)
+    [ "$c" = - ]; result cookie-set-hostonly "127.0.0.1's Set-Cookie without a Domain not sent to localhost ($c)" $?
+    # 0123: a reply's cookie for a Domain that does not cover its host is
+    # ignored (127.0.0.1 set one for localhost, which got it)
+    runh ck-foreign "" "/rdc/file.ts?c=inj%3D1%3B%20Domain%3Dlocalhost%3B%20Path%3D%2F&h=localhost" -direct r:1000
+    c=$(cookie ck-foreign $B_PORT /range/file.ts)
+    [ "$c" = - ]; result cookie-foreign "127.0.0.1's Set-Cookie for Domain=localhost ignored ($c at localhost)" $?
+    # 0124: paths match case-sensitively (Path=/RANGE went to /range/)
+    runh ck-case "" /range/file.ts -direct -o "cookies=c=1; Path=/RANGE${NL}k=1; Path=/range" r:1000
+    c=$(cookie ck-case $A_PORT /range/file.ts)
+    [ "$c" = k=1 ]; result cookie-case "Path=/RANGE not to /range/, Path=/range to it ($c)" $?
+    # 0125: behind a proxy the Path is matched against the request's path,
+    # not the whole URL the proxy is asked for (no cookie with a Path went);
+    # the proxy is B (runh's second port)
+    runh ck-proxy "" /range/file.ts -direct -o "http_proxy=http://127.0.0.1:$((PORT + 2))" \
+        -o "cookies=pp=1; Path=/range" r:1000
+    c=$(grep 'GET /range/file.ts .* proxied' "$OUT/ck-proxy.server.log" | head -1 | sed -n 's/.* cookie=\([^ ]*\) .*/\1/p')
+    [ "$c" = pp=1 ]; result cookie-proxy "Path=/range sent through the proxy (${c:--})" $?
+    # 0126: a Domain matches an IP address only exactly (Domain=0.0.1 went
+    # to 127.0.0.1)
+    runh ck-ip "" /range/file.ts -direct -o "cookies=ip=1; Domain=0.0.1; Path=/${NL}ok=1; Domain=127.0.0.1; Path=/" r:1000
+    c=$(cookie ck-ip $A_PORT /range/file.ts)
+    [ "$c" = ok=1 ]; result cookie-ip "Domain=0.0.1 not to 127.0.0.1, Domain=127.0.0.1 to it ($c)" $?
+    # 0127, 0129: a Secure cookie goes over https only (0127 keeps the bare
+    # Secure attribute, which parse_set_cookie() dropped; 0129 checks it)
+    runh ck-secure "" /range/file.ts -direct -o "cookies=s=1; Secure; Path=/${NL}n=1; Path=/" r:1000
+    c=$(cookie ck-secure $A_PORT /range/file.ts)
+    [ "$c" = n=1 ]; result cookie-secure "a Secure cookie not over http, a plain one sent ($c)" $?
+    # 0128: an attribute name is trimmed ("Path =/other" was no Path)
+    runh ck-attr-space "" /range/file.ts -direct -o "cookies=w=1; Path =/other${NL}v=1; Path=/" r:1000
+    c=$(cookie ck-attr-space $A_PORT /range/file.ts)
+    [ "$c" = v=1 ]; result cookie-attr-space "\"Path =/other\" not to /range/, Path=/ to it ($c)" $?
+    # 0130: a cookie given without a Domain goes only to the opened URL's
+    # host (it went to localhost after 127.0.0.1's redirect); 127.0.0.1 gets it
+    runh ck-given-hostonly "" "/rdc/file.ts?h=localhost" -direct -o "cookies=g=1; Path=/" r:1000
+    a=$(cookie ck-given-hostonly $A_PORT /rdc/file.ts); b=$(cookie ck-given-hostonly $B_PORT /range/file.ts)
+    [ "$a" = g=1 ] && [ "$b" = - ]; result cookie-given-hostonly "a given cookie without a Domain to 127.0.0.1 ($a), not to localhost after its redirect ($b)" $?
+    # 0130 in hls (RMP's case: the cookies option copied to every playlist
+    # and segment request): /xo/'s playlist on 127.0.0.1 names s1 on
+    # localhost; s0 and s4 on 127.0.0.1 get the cookie, s1 does not
+    run2h() {
+        PORT=$((PORT + 2)); A_PORT=$((PORT - 1)); B_PORT=$PORT
+        python3 -I "$HERE/server.py" $A_PORT --second-port $B_PORT > "$OUT/$1.server.log" 2>&1 &
+        srv=$!
+        i=0
+        until grep -q listening "$OUT/$1.server.log" 2>/dev/null || [ $i -ge 50 ]; do
+            sleep 0.1; i=$((i + 1))
+        done
+        cap "$W/hlsread" "http://127.0.0.1:$A_PORT/xo/index.m3u8?h=localhost" -q -o http_multiple=0 \
+            -o "cookies=hc=1; Path=/" > "$OUT/$1.log" 2>&1
+        kill $srv 2>/dev/null; wait $srv 2>/dev/null
+    }
+    run2h ck-hls
+    s0=$(cookie ck-hls $A_PORT /xo/s0.ts); s1=$(cookie ck-hls $B_PORT /xo/s1.ts); s4=$(cookie ck-hls $A_PORT /xo/s4.ts)
+    segs=$(grep -c 'GET /xo/s[0-9]' "$OUT/ck-hls.server.log")
+    [ "$s0" = hc=1 ] && [ "$s4" = hc=1 ] && [ "$s1" = - ] && [ "$segs" = 5 ]
+    result cookie-hls "hls: a given cookie to the playlist's host (s0 $s0, s4 $s4), not to a segment on localhost (s1 $s1; $segs segments)" $?
 }
 
 # vswitch's helpers. first NAME STREAM: "pts dts key=K" of the stream's first
@@ -605,6 +693,6 @@ check_vswitch() { # 0113-0116: a video playlist needed anew starts at its segmen
     result afresh-late-audio "late discards, a -> a2 during playback: a2 at the position ($(first afresh-late-audio 1)), its packets a's (crc $got, $want)" $ok
 }
 
-CHECKS=${*:-b19 b20 trunc chunk_trailer sidx id3 i51 i52 bad_map vod_init init_dedup init_cut headers_origin i54 cut_body vswitch conn_host}
+CHECKS=${*:-b19 b20 trunc chunk_trailer sidx id3 i51 i52 bad_map vod_init init_dedup init_cut headers_origin i54 cut_body vswitch conn_host cookies}
 for c in $CHECKS; do "check_$(echo "$c" | tr - _)"; done
 exit $FAIL

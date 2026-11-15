@@ -99,6 +99,18 @@ vcpkg_from_github(
         0121-hls-keyed-init-section-without-iv-kept.patch
         # Upstream FFmpeg master's http.c fixes since 8.1.3, not in release/8.1: one patch per commit.
         0118-http-b66d2aca0f-reuse-a-connection-only-for-the-host-i.patch
+        0119-http-88fbd111ea-match-cookies-against-the-host-name-no.patch
+        0120-http-7118404870-match-cookie-domains-only-at-a-label-b.patch
+        0121-http-15b241a171-match-cookie-paths-only-at-a-segment-b.patch
+        0122-http-4f78ae1ada-send-cookies-set-without-a-Domain-only.patch
+        0123-http-820da6158f-ignore-response-cookies-whose-Domain-d.patch
+        0124-http-9b8e45b3ba-match-cookie-paths-case-sensitively.patch
+        0125-http-4e72710e5f-match-cookie-paths-against-the-request.patch
+        0126-http-b6d3ea1220-match-cookie-domains-against-IP-addres.patch
+        0127-http-3088ba46d5-keep-cookie-attributes-that-carry-no-v.patch
+        0128-http-2e52c71caa-trim-trailing-whitespace-from-cookie-a.patch
+        0129-http-d26c080999-do-not-send-Secure-cookies-over-plain-.patch
+        0130-http-de6fb646f7-send-cookies-given-without-a-Domain-on.patch
 )
 
 if(SOURCE_PATH MATCHES " ")
