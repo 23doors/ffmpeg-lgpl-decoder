@@ -10,8 +10,9 @@ an IPTV playlist would stop playing.
 
 Accept "ICY" followed by whitespace as the version part: the code is
 parsed and checked as any other (so "ICY 404" is an error now), the
-version is left empty as before, and the connection is taken to close
-(willclose), as an ICY stream ends with it.
+version is left empty as before, and willclose is set, as for an
+HTTP/1.0 reply (an ICY stream ends with its connection; for a request
+without multiple_requests it is set from the start since 0144 anyway).
 
 diff --git a/libavformat/http.c b/libavformat/http.c
 index 3ea5ebe..b152ba0 100644

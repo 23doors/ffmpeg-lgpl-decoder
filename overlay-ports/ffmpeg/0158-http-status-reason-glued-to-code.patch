@@ -1,0 +1,32 @@
+http: accept a reason phrase glued to the status code
+
+e48a073d7e (0136) requires whitespace or the end of the line after the
+three digits of the status code, as RFC 9112 does. IPTV panels and cheap
+middleboxes answer "HTTP/1.1 200OK" (some Xtream-codes forks): before
+0136 that parsed as code 200 and played; with it every channel of such a
+provider fails the open with "Malformed HTTP status code".
+
+Accept a letter after the code too: the reason starts there. A fourth
+digit ("2000"), a letter inside the code ("20x") and a sign or other
+character after it ("200+OK") still fail. Letters are tested without the
+locale (libavutil has no av_isalpha).
+
+diff --git a/libavformat/http.c b/libavformat/http.c
+index c805ffa..575f915 100644
+--- a/libavformat/http.c
++++ b/libavformat/http.c
+@@ -1059,9 +1059,12 @@ int ff_http_parse_status_line(void *logctx, const char *line, HTTPStatusLine *st
+         p++;
+ 
+     /* RFC 9112 mandates a space after the code, but a bare "HTTP/1.1 200"
+-     * is common enough in the wild to be worth accepting. */
++     * is common enough in the wild to be worth accepting, and so is a
++     * reason glued to the code ("HTTP/1.1 200OK", IPTV panels): a fourth
++     * digit or a sign is still no code. */
+     if (!av_isdigit(p[0]) || !av_isdigit(p[1]) || !av_isdigit(p[2]) ||
+-        (p[3] && !av_isspace(p[3]))) {
++        (p[3] && !av_isspace(p[3]) &&
++         !(av_toupper(p[3]) >= 'A' && av_toupper(p[3]) <= 'Z'))) {
+         av_log(logctx, AV_LOG_ERROR, "Malformed HTTP status code.\n");
+         return AVERROR_INVALIDDATA;
+     }

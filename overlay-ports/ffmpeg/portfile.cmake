@@ -1,7 +1,7 @@
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO ffmpeg/ffmpeg
-    # release/8.1 head after n8.1.3 (2026-10-30; no n8.1.4 yet): the branch's
+    # release/8.1 head after n8.1.3 (still the head on 2026-11-15; no n8.1.4): the branch's
     # decoder and demuxer fixes (h264_direct heap overflow, dxva2 frame->buf[]
     # race, AAC USAC/SBR, cbs, mov/matroska/flv/ogg). Its RELEASE file still
     # says 8.1.3, so av_version_info() reports "8.1.3" as on the tag.
@@ -135,6 +135,9 @@ vcpkg_from_github(
         0155-hls-3ed7bc6580-keep-the-rendition-dispositions-when-a-.patch
         0156-hls-instream-renditions-per-stream.patch
         0157-hls-deselected-playlist-closed.patch
+        # http again: 0136's code check relaxed (own), upstream master's 90dae166b5.
+        0158-http-status-reason-glued-to-code.patch
+        0159-http-90dae166b5-Fix-shadowing.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

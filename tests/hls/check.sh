@@ -29,8 +29,8 @@
 #
 # usage: tests/hls/check.sh WORKDIR [CHECK...]
 #   checks: b19 b20 trunc chunk-trailer sidx id3 i51 i52 bad-map vod-init init-dedup init-cut
-#           headers-origin i54 cut-body vswitch conn-host cookies status-line
-#           bad-range crlf http-reply
+#           headers-origin i54 cut-body vswitch deselect disp conn-host cookies
+#           status-line bad-range crlf http-reply
 #   (default: all)
 set -u
 W=$(cd "$1" && pwd); shift
@@ -229,13 +229,15 @@ check_bad_map() { # 0117, 0118: a garbled EXT-X-MAP on a live reload is played t
     # 0118: a reload interrupted (a stall past the interrupt callback) is no
     # load: it fails as AVERROR_EXIT, not INVALIDDATA from the empty first
     # line, and does not stamp last_load_time, so the playlist is asked for
-    # again at once (before, a reload interval after the stalled request)
-    run stall-reload "--stall-reload 4:4000" /live/index.m3u8 -q -nofsi -maxtime 12 -stallint 1500
+    # again at once (before, a reload interval after the stalled request:
+    # 1 s or more; with the fix about 0.35 s, the interrupt 1.2 s after the
+    # last packet)
+    run stall-reload "--stall-reload 4:4000" /live/index.m3u8 -q -nofsi -maxtime 12 -stallint 1200
     gap=$(awk '/stall [0-9]+ ms before the body/ { s = t } /GET \/live\/index.m3u8/ { if (s != "" && g == "") g = $1 - s; t = $1 } END { print g }' "$OUT/stall-reload.server.log")
     played=$(field stall-reload s0)
     grep -q '^interrupt at' "$OUT/stall-reload.log" && ! grep -q 'Failed to reload playlist' "$OUT/stall-reload.log" &&
         grep -q '^maxtime' "$OUT/stall-reload.log" && [ "${played:-0}" -gt 200 ] &&
-        awk -v g="$gap" 'BEGIN { exit !(g != "" && g + 0 < 0.85) }'
+        awk -v g="$gap" 'BEGIN { exit !(g != "" && g + 0 < 0.7) }'
     result stall-reload "a reload stalled and interrupted: no failure logged, asked for again ${gap:-never} s after the stalled request, played on (s0=${played:-none})" $?
 }
 check_vod_init() { # 0119: a finished playlist's init section failure is its segment's
@@ -500,7 +502,8 @@ check_cookies() { # 0123-0134: the cookie series (88fbd111ea ... de6fb646f7)
     c=$(cookie ck-ip $A_PORT /range/file.ts)
     [ "$c" = ok=1 ]; result cookie-ip "Domain=0.0.1 not to 127.0.0.1, Domain=127.0.0.1 to it ($c)" $?
     # 0131, 0133: a Secure cookie goes over https only (0131 keeps the bare
-    # Secure attribute, which parse_set_cookie() dropped; 0133 checks it)
+    # Secure attribute, which parse_set_cookie() dropped; 0133 checks it:
+    # with 0131 alone the check still fails, it flips at 0133)
     runh ck-secure "" /range/file.ts -direct -o "cookies=s=1; Secure; Path=/${NL}n=1; Path=/" r:1000
     c=$(cookie ck-secure $A_PORT /range/file.ts)
     [ "$c" = n=1 ]; result cookie-secure "a Secure cookie not over http, a plain one sent ($c)" $?
@@ -535,10 +538,10 @@ check_cookies() { # 0123-0134: the cookie series (88fbd111ea ... de6fb646f7)
     result cookie-hls "hls: a given cookie to the playlist's host (s0 $s0, s4 $s4), not to a segment on localhost (s1 $s1; $segs segments)" $?
 }
 
-check_status_line() { # 0136 (e48a073d7e), 0137: malformed status lines fail the open
+check_status_line() { # 0136 (e48a073d7e), 0137, 0158: malformed status lines fail the open
     # before e48a073d7e they read as status 0, a success: the body (of an
     # error, or of no http server) went to the demuxer
-    for kind in nocode short plus badver; do
+    for kind in nocode short plus badver long digx sign; do
         runh st-$kind "" /status/$kind -direct r:100
         line=$(grep -E '^(open failed|read )' "$OUT/st-$kind.log" | head -1)
         grep -q '^open failed: Invalid data' "$OUT/st-$kind.log"
@@ -560,6 +563,13 @@ check_status_line() { # 0136 (e48a073d7e), 0137: malformed status lines fail the
     runh st-bare "" /status/bare -direct ra
     grep -q '^read -1 got 4096 ' "$OUT/st-bare.log"
     result status-bare "HTTP/1.1 200 without a reason reads its body" $?
+    # 0158: a reason glued to the code ("HTTP/1.1 200OK", IPTV panels) still
+    # opens, as it did before e48a073d7e (a fourth digit, a letter in the
+    # code or a sign after it still fail: status-long, -digx, -sign)
+    runh st-glued "" /status/glued -direct ra
+    a=$(grep -E '^(open failed|read )' "$OUT/st-glued.log" | head -1)
+    grep -q '^read -1 got 4096 ' "$OUT/st-glued.log"
+    result status-glued "HTTP/1.1 200OK reads its body ($a)" $?
 }
 check_bad_range() { # 0138 (2ff5405601): a Content-Range ending before its start fails the open
     # (before, http asked again and again for the rest: capped at 10 s here)

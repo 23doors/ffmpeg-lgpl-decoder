@@ -86,7 +86,9 @@ Paths:
   /status/KIND      4096 bytes after the status line KIND names (nocode "HTTP/1.1 OK",
                     short "HTTP/1.1 20 Short", plus "HTTP/1.1 +200 Plus", badver
                     "HTTP/x 200 Bad version", icy "ICY 200 OK", icy404 "ICY 404 Not
-                    Found", ok "HTTP/1.1 200 OK", bare "HTTP/1.1 200")
+                    Found", ok "HTTP/1.1 200 OK", bare "HTTP/1.1 200", glued
+                    "HTTP/1.1 200OK", long "HTTP/1.1 2000 OK", digx "HTTP/1.1 20x OK",
+                    sign "HTTP/1.1 200+OK")
   /badrange/file.ts a 206 with "Content-Range: bytes 100-50/4096"
   /range/file.ts    /prog/file.ts with byte ranges (a Range gets 206), kept alive;
                     query flags chunked, close, conn=V, star, loc, noranges, fail,
@@ -108,8 +110,6 @@ on which port it came, on which connection (the client's port), its Range
 and Cookie (spaces removed) when it had them, and its Host.
 Every request is logged with its time since start (seconds) to stdout.
 """
-import sys, time, os, threading, socket, subprocess
-import sys, time, os, threading, socket, urllib.parse
 import sys, time, os, threading, socket, urllib.parse, ssl, subprocess, tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -684,7 +684,9 @@ class H(BaseHTTPRequestHandler):
             body = open(os.path.join(D, "ts", "s0.ts"), "rb").read()[:4096]
             line = {"nocode": "HTTP/1.1 OK", "short": "HTTP/1.1 20 Short", "plus": "HTTP/1.1 +200 Plus",
                     "badver": "HTTP/x 200 Bad version", "icy": "ICY 200 OK", "icy404": "ICY 404 Not Found",
-                    "ok": "HTTP/1.1 200 OK", "bare": "HTTP/1.1 200"}[p[len("/status/"):]]
+                    "ok": "HTTP/1.1 200 OK", "bare": "HTTP/1.1 200", "glued": "HTTP/1.1 200OK",
+                    "long": "HTTP/1.1 2000 OK", "digx": "HTTP/1.1 20x OK",
+                    "sign": "HTTP/1.1 200+OK"}[p[len("/status/"):]]
             return self.send_raw(line, ["Content-Type: video/mp2t", "Connection: close"], body)
         if p == "/badrange/file.ts":
             # a 206 whose Content-Range ends before it starts
