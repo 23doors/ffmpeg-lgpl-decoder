@@ -29,6 +29,9 @@ usage: server.py PORT [options]
   --long-tag LEN            /long/index.m3u8 has an EXT-X-DATERANGE line of LEN chars
                             (an X-ASSET-URI= this demuxer does not read)
   --ipv6                    listen on ::1, not 127.0.0.1
+  --pace KBPS               bodies sent at KBPS KiB/s in 8 KiB writes (plain replies);
+                            each logs "  sent N of M" at its end or "  closed after N
+                            of M" when the client closed the connection first
   --tls                     a CONNECT opens a TLS tunnel (a self-signed certificate made
                             with the openssl command) to this server's own paths: an
                             https URL read through this server as its proxy
@@ -142,6 +145,7 @@ if "--trunc" in opt:
     s_, b_, ms_ = opt["--trunc"].split(":")
     TRUNC = (int(s_), int(b_), int(ms_))
 INIT_CUT = int(opt.get("--init-cut", "0"))
+PACE = int(opt.get("--pace", "0"))
 LONG = int(opt.get("--long-line", "0"))
 CUT_RELOAD = tuple(int(x) for x in opt["--cut-reload"].split(":")) if "--cut-reload" in opt else None
 live_requests = 0
@@ -304,6 +308,19 @@ class H(BaseHTTPRequestHandler):
             log("  stall %d ms after %d of %d bytes" % (ms, b, len(body)))
             time.sleep(ms / 1000.0)
             self.wfile.write(body[b:])
+        elif PACE:
+            sent = 0
+            try:
+                while sent < len(body):
+                    self.wfile.write(body[sent:sent + 8192])
+                    self.wfile.flush()
+                    sent = min(sent + 8192, len(body))
+                    time.sleep(8.0 / PACE)
+            except (BrokenPipeError, ConnectionResetError):
+                log("  closed after %d of %d %s" % (sent, len(body), self.path))
+                self.close_connection = True
+                return
+            log("  sent %d of %d %s" % (sent, len(body), self.path))
         else:
             self.wfile.write(body)
 

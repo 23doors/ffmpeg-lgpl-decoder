@@ -1,0 +1,66 @@
+hls: close a playlist at once when it is no longer needed
+
+A media playlist whose streams were all discarded after the first packet
+(a player that picks its tracks after avformat_find_stream_info(), or a
+variant switch) was dropped only at its I/O buffer's next refill, and
+reload_playlist() returned there without closing its inputs: the
+segment's connection and the next segment's early open (http_multiple)
+stayed open and downloaded the rest of both for nothing (after each
+variant switch, up to a segment and a half of the old variant), and its
+buffered packet was still handed on, for a discarded stream.
+
+Close it at once, as a subtitle playlist is: the inputs, the playlist's
+connection and the buffered packet. 0114 starts it afresh when it is
+needed again. recheck_discard_flags() needs no "first" argument any more.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index 2f52ae0..ca97b26 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -3471,7 +3471,7 @@ static int hls_read_header(AVFormatContext *s)
+     return 0;
+ }
+ 
+-static int recheck_discard_flags(AVFormatContext *s, int first)
++static int recheck_discard_flags(AVFormatContext *s)
+ {
+     HLSContext *c = s->priv_data;
+     int i, changed = 0;
+@@ -3548,19 +3548,22 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+                 }
+             }
+             av_log(s, AV_LOG_INFO, "Now receiving playlist %d, segment %"PRId64"\n", i, pls->cur_seq_no);
+-        } else if ((first || pls->is_subtitle) && !cur_needed && pls->needed) {
+-            /* A subtitle playlist no longer selected is closed at once: its
+-             * segment, the subtitle demuxer and its connections. Selected
+-             * again, it starts afresh at the current position. */
++        } else if (!cur_needed && pls->needed) {
++            /* A playlist no longer selected is closed at once: its segment,
++             * the next one opened early and its connections (read on, they
++             * downloaded the rest of a segment and the next one for
++             * nothing), and its buffered packet (handed on for a discarded
++             * stream); a subtitle playlist's demuxer too. Selected again,
++             * it starts afresh at the current position. */
+             ff_format_io_close(pls->parent, &pls->input);
+             pls->input_read_done = 0;
+             ff_format_io_close(pls->parent, &pls->input_next);
+             pls->input_next_requested = 0;
+             pls->input_next_error = 0;
++            ff_format_io_close(pls->parent, &pls->playlist_pb);
++            av_packet_unref(pls->pkt);
+             if (pls->is_subtitle) {
+                 avformat_close_input(&pls->ctx);
+-                ff_format_io_close(pls->parent, &pls->playlist_pb);
+-                av_packet_unref(pls->pkt);
+                 free_subtitle_cues(pls);
+             }
+             pls->needed = 0;
+@@ -3691,7 +3694,7 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+     HLSContext *c = s->priv_data;
+     int ret, i, minplaylist = -1, deferred = 0, unanchored = 0;
+ 
+-    recheck_discard_flags(s, c->first_packet);
++    recheck_discard_flags(s);
+     c->first_packet = 0;
+ 
+ retry:

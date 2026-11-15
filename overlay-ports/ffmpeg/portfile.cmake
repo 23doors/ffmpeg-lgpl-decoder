@@ -134,6 +134,7 @@ vcpkg_from_github(
         # Upstream FFmpeg master's hls.c fixes since 8.1.3, not in release/8.1.
         0151-hls-3ed7bc6580-keep-the-rendition-dispositions-when-a-.patch
         0152-hls-instream-renditions-per-stream.patch
+        0153-hls-deselected-playlist-closed.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

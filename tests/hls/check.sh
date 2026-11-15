@@ -734,6 +734,19 @@ check_disp() { # 0151 (3ed7bc6580), 0152: rendition dispositions and metadata on
     result disp-instream "in-stream renditions en (default), de on streams 1, 2 ($got)" $?
 }
 
+check_deselect() { # 0153: a playlist no longer needed is closed at once
+    # RMP's order (tracks picked after avformat_find_stream_info()), v1 to v2
+    # at 2.12 s, replies paced at 100 KiB/s: v1's s1, opened early with s0,
+    # was read on to its end for nothing (the playlist was dropped only at
+    # its next buffer refill, its inputs left open)
+    run deselect "--pace 100" /mv/master.m3u8 -q -late -discard 1 -discard 3 -ev 2:off:2 -ev 2:on:3 -maxtime 15
+    s1=$(grep '/mv/v1/s1.ts$' "$OUT/deselect.server.log" | grep -E '  (sent|closed after) ' | sed 's/^ *[0-9.]* *//')
+    v2=$(field deselect s3)
+    case "$s1" in "closed after "*) ok=0;; *) ok=1;; esac
+    [ "$ok" = 0 ] && [ "$v2" = 900 ]
+    result deselect "v1 dropped at the switch: its early-opened s1 closed ($s1), v2's 900 packets ($v2)" $?
+}
+
 check_vswitch() { # 0113-0116: a video playlist needed anew starts at its segment's keyframe
     # media/mv: 6 s segments, a 6 s GOP; the timeline's segment 2 starts at
     # 13.48 (the video keyframe's PTS; its DTS is 13.40). At 16.12 a player
@@ -871,6 +884,6 @@ check_vswitch() { # 0113-0116: a video playlist needed anew starts at its segmen
     result afresh-late-audio "late discards, a -> a2 during playback: a2 at the position ($(first afresh-late-audio 1)), its packets a's (crc $got, $want)" $ok
 }
 
-CHECKS=${*:-b19 b20 trunc chunk_trailer sidx id3 i51 i52 bad_map vod_init init_dedup init_cut headers_origin i54 cut_body vswitch disp conn_host cookies status_line bad_range crlf http_reply}
+CHECKS=${*:-b19 b20 trunc chunk_trailer sidx id3 i51 i52 bad_map vod_init init_dedup init_cut headers_origin i54 cut_body vswitch deselect disp conn_host cookies status_line bad_range crlf http_reply}
 for c in $CHECKS; do "check_$(echo "$c" | tr - _)"; done
 exit $FAIL
