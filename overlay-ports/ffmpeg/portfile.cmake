@@ -70,6 +70,7 @@ vcpkg_from_github(
         0096-hls-857ee5f9c5-saturate-the-playlist-timestamp-offset-arithmeti.patch
         0097-hls-d9242028a6-fix-reading-byte-range-segments-after-the-first.patch
         0098-hls-webvtt-segment-starts-a-new-block.patch
+        0099-hls-interrupted-segment-body-read-on.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

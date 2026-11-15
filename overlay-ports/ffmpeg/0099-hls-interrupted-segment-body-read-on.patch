@@ -1,0 +1,37 @@
+hls: an interrupt in a segment's body reads on from where it stopped
+
+When the caller's interrupt callback cuts the read of a segment's body
+short, avio_read() of the segment's input returns AVERROR_EXIT and
+read_playlist_data() took that as the segment's end: it closed the input,
+moved to the next segment and requested it. A player that interrupts a
+read for something other than a seek (a control request it handles and
+then reads on) lost the rest of that segment: a silent gap of up to a
+segment in sound and picture. 0076 and 0077 cover an interrupted request
+and the buffer's error; nothing covered the body.
+
+Return AVERROR_EXIT and keep the input, its offset in the segment and
+the connection: http stops at an interrupt without closing the
+connection, and an interrupted reconnect wait leaves http to reconnect at
+its offset on the next read. The input's EOF flag and error, which
+avio_read() set, are cleared, so the next call of the read callback reads
+on from the same place. A seek closes the input as before.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -2224,6 +2224,15 @@ restart:
+             memmove(buf, buf + vtt_gap, ret);
+         }
+     }
++    if (ret == AVERROR_EXIT) {
++        /* The caller's interrupt callback cut the read of the segment's body
++         * short. An interrupt is transient (a seek starts reading anew
++         * anyway): keep the input and the offset, and read on from there on
++         * the next call, instead of dropping the rest of the segment. */
++        v->input->eof_reached = 0;
++        v->input->error = 0;
++        return ret;
++    }
+     if (ret > 0) {
+         if (just_opened && v->is_id3_timestamped != 0) {
+             /* Intercept ID3 tags here, elementary audio streams are required
