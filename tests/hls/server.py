@@ -15,9 +15,9 @@ usage: server.py PORT [options]
   --long-tag LEN            /long/index.m3u8 has an EXT-X-DATERANGE line of LEN chars
                             (an X-ASSET-URI= this demuxer does not read)
   --ipv6                    listen on ::1, not 127.0.0.1
-  --cut SEQ                 VOD TS segment SEQ and /prog/file.ts: the whole
-                            Content-Length, half the body, then the connection
-                            closes (a proxy that lost its upstream)
+  --cut SEQ                 VOD TS segment SEQ, and /prog/file.ts for any SEQ:
+                            the whole Content-Length, half the body, then the
+                            connection closes (a proxy that lost its upstream)
 Paths:
   /vod/index.m3u8   VOD TS, 1 s segments s0..s19
   /vodfmp4/index.m3u8  the same in fMP4, with EXT-X-MAP init.mp4
@@ -29,6 +29,9 @@ Paths:
   /vtt/subs.m3u8    VOD WebVTT segments ending in a newline, none or a blank line
   /long/index.m3u8  VOD TS with a long first segment URL
   /prog/file.ts     a progressive TS file (s0..s4, 5 s), no Accept-Ranges
+  /prog/akamai.ts   s0..s4 as a live stream from "Server: AkamaiGHost" with
+                    its placeholder Content-Length 2147483647, no Accept-Ranges;
+                    the connection closes after them (each request alike)
   /xo/index.m3u8    VOD TS on either port: s0 here, s2 by a redirect to the
                     other port, s1 on the other port (a new request on the
                     connection that redirect left open), s3 by a redirect to
@@ -128,10 +131,14 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def send(self, code, body=b"", ctype="application/octet-stream", stall=None, cut=False):
+    def version_string(self):
+        return getattr(self, "server_name", None) or BaseHTTPRequestHandler.version_string(self)
+
+    def send(self, code, body=b"", ctype="application/octet-stream", stall=None, cut=False,
+             length=None):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(len(body) if length is None else length))
         self.end_headers()
         if cut:
             self.wfile.write(body[:len(body) // 2])
@@ -273,6 +280,16 @@ class H(BaseHTTPRequestHandler):
         if p == "/prog/file.ts":
             body = b"".join(open(os.path.join(D, "ts", "s%d.ts" % n), "rb").read() for n in range(5))
             return self.send(200, body, "video/mp2t", cut=CUT is not None)
+        if p == "/prog/akamai.ts":
+            body = b"".join(open(os.path.join(D, "ts", "s%d.ts" % n), "rb").read() for n in range(5))
+            self.server_name = "AkamaiGHost"
+            self.send(200, b"", "video/mp2t", length=2147483647)
+            self.server_name = None
+            self.wfile.write(body)
+            self.wfile.flush()
+            self.close_connection = True
+            log("  closed after %d of 2147483647 bytes" % len(body))
+            return
         if p == "/live/index.m3u8" or p == "/livefmp4/index.m3u8":
             first, last = live_head()
             fmp4 = p.startswith("/livefmp4")

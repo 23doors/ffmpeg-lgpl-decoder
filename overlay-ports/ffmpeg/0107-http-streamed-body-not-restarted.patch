@@ -19,10 +19,58 @@ chunked reply) still reconnects at byte 0: a live stream does not repeat
 its bytes, and a chunked one cannot be told apart from it. A reply cut
 before its first byte still reconnects, with the backoff.
 
+So does a live stream with the placeholder Content-Length http.c
+already keeps streamed (Akamai's 2147483647, MediaGateway's
+2000000000): the two checks for them become helpers, fake_live_length()
+names both, and the new check skips them. Other servers that send a
+placeholder length cannot be told apart and end in EIO at a cut.
+
 diff --git a/libavformat/http.c b/libavformat/http.c
 --- a/libavformat/http.c
 +++ b/libavformat/http.c
-@@ -1973,6 +1973,19 @@ retry:
+@@ -386,6 +386,23 @@ end:
+         h, path, local_path, hoststr, auth, proxyauth);
+ }
+ 
++/* Servers that send a Content-Length on a live stream, which cannot be
++ * resumed or seeked: the length is a placeholder, not the body's size. */
++static int akamai_fake_length(const HTTPContext *s)
++{
++    return s->is_akamai && s->filesize == 2147483647;
++}
++
++static int mediagateway_fake_length(const HTTPContext *s)
++{
++    return s->is_mediagateway && s->filesize == 2000000000;
++}
++
++static int fake_live_length(const HTTPContext *s)
++{
++    return akamai_fake_length(s) || mediagateway_fake_length(s);
++}
++
+ static int http_should_reconnect(HTTPContext *s, int err)
+ {
+     const char *status_group;
+@@ -995,7 +1012,7 @@ static void parse_content_range(URLContext *h, const char *p)
+         if ((slash = strchr(p, '/')) && strlen(slash) > 0)
+             s->filesize_from_content_range = strtoull(slash + 1, NULL, 10);
+     }
+-    if (s->seekable == -1 && (!s->is_akamai || s->filesize != 2147483647))
++    if (s->seekable == -1 && !akamai_fake_length(s))
+         h->is_streamed = 0; /* we _can_ in fact seek */
+ }
+ 
+@@ -1552,7 +1569,7 @@ static int http_read_header(URLContext *h)
+     if (s->filesize_from_content_range != UINT64_MAX)
+         s->filesize = s->filesize_from_content_range;
+ 
+-    if (s->seekable == -1 && s->is_mediagateway && s->filesize == 2000000000)
++    if (s->seekable == -1 && mediagateway_fake_length(s))
+         h->is_streamed = 1; /* we can in fact _not_ seek */
+ 
+     if (h->is_streamed)
+@@ -1973,6 +1990,21 @@ retry:
          if (h->is_streamed && !s->reconnect_streamed)
              break;
  
@@ -30,9 +78,11 @@ diff --git a/libavformat/http.c b/libavformat/http.c
 +         * ranges) was cut after data came: a reconnect would ask for it
 +         * from byte 0 again, and what came again would follow what was
 +         * read, cut at the same byte without end if the cut stays. End the
-+         * read with an error instead; a stream without a size (a live
-+         * stream) still reconnects, its bytes do not repeat. */
-+        if (h->is_streamed && s->off > 0 && s->filesize != UINT64_MAX && is_premature) {
++         * read with an error instead; a stream without a size, or with a
++         * placeholder one (a live stream), still reconnects, its bytes do
++         * not repeat. */
++        if (h->is_streamed && s->off > 0 && s->filesize != UINT64_MAX &&
++            !fake_live_length(s) && is_premature) {
 +            av_log(h, AV_LOG_WARNING, "Body cut at %"PRIu64" of %"PRIu64" bytes and the "
 +                   "server cannot resume it: not reconnecting, error=%s.\n",
 +                   s->off, s->filesize, av_err2str(read_ret));

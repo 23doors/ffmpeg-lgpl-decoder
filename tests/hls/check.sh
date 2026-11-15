@@ -195,6 +195,7 @@ check_cut_body() { # 0107: a cut body from a server without ranges is not read a
     # a progressive file with reconnect_streamed (RMP's progressive options):
     # one request, the read ends in an error at the cut, with no byte twice
     # (stock http reads the file's start again, appended, without end)
+    # (the reference reads the whole body, so it needs no reconnect options)
     run cut-prog-ref "" /prog/file.ts -q
     run cut-prog "--cut 0" /prog/file.ts -q -maxtime 20 -o reconnect=1 -o reconnect_streamed=1 -o reconnect_on_network_error=1
     req=$(grep -c 'GET /prog/file.ts' "$OUT/cut-prog.server.log")
@@ -202,6 +203,13 @@ check_cut_body() { # 0107: a cut body from a server without ranges is not read a
     grep -q '^end: Input/output error' "$OUT/cut-prog.log" && [ "$req" = 1 ] && [ -n "$full" ] &&
         [ "${got:-0}" -gt 0 ] && [ "$got" -lt "$full" ]
     result cut-prog "requested once ($req), ends in an I/O error, $got of $full video packets" $?
+    # a live stream with Akamai's placeholder Content-Length (2147483647),
+    # which http.c keeps streamed: a cut still reconnects at byte 0
+    run cut-akamai "" /prog/akamai.ts -q -maxtime 8 -o reconnect=1 -o reconnect_streamed=1 -o reconnect_on_network_error=1
+    req=$(grep -c 'GET /prog/akamai.ts' "$OUT/cut-akamai.server.log")
+    ! grep -q '^end: Input/output error' "$OUT/cut-akamai.log" && ! grep -q 'Body cut at' "$OUT/cut-akamai.log" &&
+        [ "$req" -ge 2 ]
+    result cut-akamai "a placeholder length still reconnects ($req requests), no I/O error" $?
     # an hls segment with RMP's options (0070 passes reconnect_streamed on to
     # it): the segment once, then the rest of the playlist
     run cut-hls-ref "" /vod/index.m3u8 -q
