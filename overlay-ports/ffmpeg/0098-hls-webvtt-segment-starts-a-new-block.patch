@@ -15,7 +15,8 @@ optional BOM, then "WEBVTT" alone or followed by a space, tab or line
 end), put a blank line in front of it, so its header is a block of its
 own, which the demuxer skips (or applies, with timestamp_map). Other
 segment data (MPEG-TS, fMP4, ID3, ADTS) never starts that way and reads
-as before.
+as before. The flag is cleared where the playlist's read starts afresh
+(a seek, a changed selection, a re-enable).
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
 --- a/libavformat/hls.c
@@ -95,3 +96,27 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
      v->cur_seq_no++;
  
      c->cur_seq_no = v->cur_seq_no;
+@@ -3079,6 +3110,7 @@ static int hls_read_header(AVFormatContext *s)
+             pls->input_next_error = 0;
+             pls->cur_seg_offset = 0;
+             pls->cur_init_section = NULL;
++            pls->segment_boundary = 0;
+             /* Reset EOF flag */
+             pls->pb.pub.eof_reached = 0;
+             pls->pb.pub.error = 0;
+@@ -3254,6 +3286,7 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+             pls->segment_error_time = 0;
+             pls->subtitle_segment_failed = 0;
+             pls->subtitle_retry_time = 0;
++            pls->segment_boundary = 0;
+             pls->pb.pub.eof_reached = 0;
+             pls->pb.pub.error = 0;
+             if (c->cur_timestamp != AV_NOPTS_VALUE) {
+@@ -3877,6 +3910,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+ 
+         /* Reset the init segment so it's re-fetched and served appropriately */
+         pls->cur_init_section = NULL;
++        pls->segment_boundary = 0;
+ 
+         /* The discard in hls_read_packet compares this playlist's packet DTS
+          * against seek_timestamp, but seek_timestamp is on c->first_timestamp's
