@@ -1,4 +1,4 @@
-hls: a playlist load that fails half way drops its kept-alive connection
+hls: a playlist load cut short or failing half way fails, and drops its connection
 
 With http_persistent (the default) a playlist reload reuses the
 connection the last load read its answer on. A load that failed before
@@ -8,13 +8,36 @@ the next reload read it first: no "#EXTM3U" line, so that reload failed
 too, and so on, a line of the old answer at a time (in the fixture, three
 garbled answers made 13 failed reloads).
 
-Close the kept-alive connection when a load fails; the next load opens a
-new one.
+A read that ended in an error was no failure at all: the line loop ends
+at avio_feof(), which an error sets as the end does, so an answer cut by
+the server (EIO since 0107) or interrupted by the caller's callback (a
+seek during a reload) was taken whole. The truncated list replaced the
+playlist until the next reload, and an interrupted connection kept the
+rest of the answer for the next one.
+
+Fail such a load with the read's error, so the previous list stays
+(0071) and 0102 decides what follows (an interrupt returns; a cut is
+retried), and close the kept-alive connection when a load fails; the
+next load opens a new one.
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -1510,6 +1510,10 @@ fail:
+@@ -1445,6 +1445,13 @@ static int parse_playlist(HLSContext *c, const char *url,
+             }
+         }
+     }
++    /* The lines end with an error as with the end of the answer: a read
++     * cut short (an interrupt, a body cut by the server) is no whole
++     * playlist. The previous list stays, the connection is dropped below. */
++    if (in->error < 0) {
++        ret = in->error;
++        goto fail;
++    }
+     if (prev_segments && pls->anchor_ts != AV_NOPTS_VALUE &&
+         pls->anchor_seq_no < pls->start_seq_no) {
+         /* Carry the anchor to the new first segment through the segments the
+@@ -1510,6 +1517,10 @@ fail:
      av_free(new_url);
      if (close_in)
          ff_format_io_close(c->ctx, &in);
