@@ -1,0 +1,45 @@
+hls: a media playlist needed again starts afresh
+
+A playlist no longer needed at the first read (a variant or rendition
+the caller discarded at the open) is closed, but its subdemuxer and its
+I/O buffer keep what they held: the open's probe, part of its first
+segment, and a buffered packet. Needed again, it read on from those:
+stale packets from the start of the stream came first (an audio
+rendition's at 0 s, after which the catch-up ended), and the subdemuxer
+ran them into the new segment's bytes (corrupt packets; an fMP4 video
+variant gave no packet at all, mov taking the new fragments for parts of
+the old one).
+
+Drop them as a seek does: close the inputs, empty the buffer, flush the
+subdemuxer, unref the packet and serve the init section again. Subtitle
+playlists are reopened already.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -3478,6 +3478,25 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+                 avformat_close_input(&pls->ctx);
+                 free_subtitle_cues(pls);
+             }
++            if (!pls->is_subtitle) {
++                /* A media playlist that stopped being read still holds what
++                 * its subdemuxer and I/O buffer had then (the open's probe,
++                 * part of a segment), and a packet: drop them, as a seek
++                 * does, or they come first, from where it stopped, and run
++                 * into the new segment's data (corrupt packets). */
++                AVIOContext *const pb = &pls->pb.pub;
++                ff_format_io_close(pls->parent, &pls->input);
++                pls->input_read_done = 0;
++                ff_format_io_close(pls->parent, &pls->input_next);
++                pls->input_next_requested = 0;
++                pls->input_next_error = 0;
++                av_packet_unref(pls->pkt);
++                pb->buf_end = pb->buf_ptr = pb->buffer;
++                pb->pos = 0;
++                if (pls->ctx)
++                    ff_read_frame_flush(pls->ctx);
++                pls->cur_init_section = NULL;
++            }
+             pls->cur_seq_no = select_cur_seq_no(c, pls);
+             pls->first_read_seq_no = -1;
+             pls->reload_error_time = 0;
