@@ -1,0 +1,58 @@
+hls: a live playlist's failed initialization section fails its segment
+
+A segment's Media Initialization Section (EXT-X-MAP) is requested before
+the segment, and again whenever the section changes (on a live playlist,
+after a reload). Its failure was returned from the read callback at once:
+the playlist failed for good (0074), while the same failure of the
+segment itself is retried seg_max_retry times, skipped as seg_skip says
+and fails the playlist only after live_reload_timeout (0072). One failed
+request for the section of a live fMP4 stream ended playback.
+
+On a live playlist, handle the section's failure as one of the segment
+it maps: retried, then skipped, or the error returned once the segments
+have failed for live_reload_timeout with seg_skip=live, or at once with
+seg_skip=never. The segment after the skipped one asks for the section
+again. An early open of the skipped segment (http_multiple) is dropped. A
+finished playlist returns the error at once, as before.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -2150,6 +2150,37 @@ restart:
+ 
+         /* load/update Media Initialization Section, if any */
+         ret = update_init_section(v, seg);
++        if (ret < 0 && !v->finished) {
++            /* On a live playlist, the initialization section's failure is
++             * one of the segment it maps: retried, skipped and failed for
++             * good as the segment's own would be (seg_max_retry, seg_skip,
++             * live_reload_timeout). The next segment asks for it again. */
++            if (ff_check_interrupt(c->interrupt_callback))
++                return AVERROR_EXIT;
++            if (!v->segment_error_time)
++                v->segment_error_time = open_start;
++            if (segment_retries >= c->seg_max_retry) {
++                if (segment_failure_is_final(c, v)) {
++                    av_log(v->parent, AV_LOG_ERROR, "Initialization section of segment %"PRId64" of playlist %d failed too many times: %s\n",
++                           v->cur_seq_no, v->index, av_err2str(ret));
++                    return ret;
++                }
++                av_log(v->parent, AV_LOG_WARNING, "Initialization section of segment %"PRId64" of playlist %d failed too many times, skipping the segment\n",
++                       v->cur_seq_no, v->index);
++                /* An early open was for the skipped segment. */
++                if (v->input_next_requested) {
++                    ff_format_io_close(v->parent, &v->input_next);
++                    v->input_next_requested = 0;
++                }
++                if (v->input_next_error && v->input_next_seq_no <= v->cur_seq_no)
++                    v->input_next_error = 0;
++                v->cur_seq_no++;
++                segment_retries = 0;
++            } else {
++                segment_retries++;
++            }
++            goto restart;
++        }
+         if (ret)
+             return ret;
+ 

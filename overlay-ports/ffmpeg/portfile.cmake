@@ -72,6 +72,7 @@ vcpkg_from_github(
         0098-hls-webvtt-segment-starts-a-new-block.patch
         0099-hls-interrupted-segment-body-read-on.patch
         0100-hls-cut-playlist-line-fails.patch
+        0101-hls-live-init-section-failure-fails-its-segment.patch
 )
 
 if(SOURCE_PATH MATCHES " ")
