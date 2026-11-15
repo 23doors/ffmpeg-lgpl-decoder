@@ -82,6 +82,7 @@ vcpkg_from_github(
         0108-mov-interrupted-sample-read-again.patch
         0109-hls-cut-init-section-not-stored.patch
         0110-mpegts-interrupted-packet-read-again.patch
+        0111-mov-interrupted-root-read-again.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

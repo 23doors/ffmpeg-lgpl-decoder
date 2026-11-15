@@ -1,0 +1,156 @@
+mov: an interrupt in a fragment's header atoms is no end of the input
+
+mov_switch_root() cleared next_root_atom before it read the next
+fragment's moof. When the caller's interrupt callback cut that read (the
+open of an hls segment, or its first bytes, while a player pauses with
+its prefetch interrupt), mov_read_default() stopped on the latched error
+and AVERROR_EOF went up as AVERROR_EXIT; but with next_root_atom 0 the
+next call took mov_read_packet()'s "no next root atom" for the end of
+the input, and hls ended the playlist on the first read after the
+interrupt: a long pause on CMAF HLS that began while the demuxer stood
+between two fragments ended playback on resume. An interrupt inside the
+moof was worse to retry: the parse had taken the missing bytes for zeros
+and put the fragment's samples in the index, which a second parse would
+add again.
+
+Before parsing, read the atoms up to and with the next mdat's header into
+the I/O buffer and seek back (mov_preload_root(); ffio_ensure_seekback()
+makes the buffer keep them, its window doubled as needed; at most 32
+atoms and 16 MiB, beyond which the parse reads as before). When the
+interrupt cuts that read, nothing is parsed: the fragment's headers_read
+is undone, AVERROR_EXIT is returned, and the next call reads the root
+again from the same position (hls's reset path at position 0 too). A
+seek drops the pending read. The parse itself then reads only from the
+buffer. On a seekable input the seek back may go to the input where the
+atoms spanned a refill; mov reads a seekable fragmented input's
+fragments when it opens it, so this path is rare there.
+
+diff --git a/libavformat/isom.h b/libavformat/isom.h
+--- a/libavformat/isom.h
++++ b/libavformat/isom.h
+@@ -351,6 +351,8 @@ typedef struct MOVContext {
+     int ignore_chapters;
+     int seek_individually;
+     int64_t next_root_atom; ///< offset of the next root atom
++    int root_cut;           ///< an interrupt cut the read of the root atom at root_cut_pos
++    int64_t root_cut_pos;
+     int export_all;
+     int export_xmp;
+     int *bitrates;          ///< bitrates read before streams creation
+diff --git a/libavformat/mov.c b/libavformat/mov.c
+--- a/libavformat/mov.c
++++ b/libavformat/mov.c
+@@ -11239,11 +11239,70 @@ static int should_retry(AVIOContext *pb, int error_code) {
+     return 1;
+ }
+ 
++#define MOV_PRELOAD_MAX   (16 << 20)
++#define MOV_PRELOAD_ATOMS 32
++
++/* Reads the atoms from the position up to and with the next mdat's header
++ * into the I/O buffer, and seeks back: an interrupt from the caller's
++ * callback cuts the read here, before anything of them is parsed (a parse
++ * cut part way takes the missing bytes for zeros, and what it put in the
++ * index cannot be read again). Returns AVERROR_EXIT when the interrupt cut
++ * it, else 0 (the parse meets any other error or the end itself). Atoms
++ * past MOV_PRELOAD_MAX bytes or MOV_PRELOAD_ATOMS atoms, or of no stated
++ * size, are not preloaded. */
++static int mov_preload_root(AVIOContext *pb)
++{
++    int64_t start = avio_tell(pb), end = start, kept = 4096;
++    int cut = 0;
++
++    /* the buffer keeps everything from start on (a no-op on a seekable
++     * input, which can seek back) */
++    if (ffio_ensure_seekback(pb, kept) < 0)
++        return 0;
++    for (int i = 0; i < MOV_PRELOAD_ATOMS; i++) {
++        uint8_t hdr[16];
++        uint64_t size;
++        int n, len;
++
++        if (end - start + 16 > kept) {
++            /* a larger window, from start again (doubled: a few times at most) */
++            while (end - start + 16 > kept)
++                kept *= 2;
++            if (avio_seek(pb, start, SEEK_SET) != start)
++                return AVERROR(EIO);
++            if (ffio_ensure_seekback(pb, kept) < 0)
++                break;
++        }
++        if (avio_tell(pb) != end && avio_seek(pb, end, SEEK_SET) != end) {
++            cut = pb->error == AVERROR_EXIT;
++            break;
++        }
++        n = avio_read(pb, hdr, 8);
++        len = n == 8 && AV_RB32(hdr) == 1 ? 16 : 8;
++        if (len == 16)
++            n += FFMAX(avio_read(pb, hdr + 8, 8), 0);
++        if (n < len) {
++            cut = pb->error == AVERROR_EXIT;
++            break;
++        }
++        size = len == 16 ? AV_RB64(hdr + 8) : AV_RB32(hdr);
++        if (AV_RL32(hdr + 4) == MKTAG('m','d','a','t') || size < len ||
++            size > MOV_PRELOAD_MAX - (end - start))
++            break;
++        end += size;
++    }
++    if (avio_seek(pb, start, SEEK_SET) != start)
++        return AVERROR(EIO);
++    return cut ? AVERROR_EXIT : 0;
++}
++
+ static int mov_switch_root(AVFormatContext *s, int64_t target, int index)
+ {
+     int ret;
+     MOVContext *mov = s->priv_data;
++    int read_index = -1;
+ 
++    mov->root_cut = 0;
+     if (index >= 0 && index < mov->frag_index.nb_items)
+         target = mov->frag_index.item[index].moof_offset;
+     if (target >= 0 && avio_seek(s->pb, target, SEEK_SET) != target) {
+@@ -11261,10 +11320,23 @@ static int mov_switch_root(AVFormatContext *s, int64_t target, int index)
+         if (mov->frag_index.item[index].headers_read)
+             return 0;
+         mov->frag_index.item[index].headers_read = 1;
++        read_index = index;
+     }
+ 
+     mov->found_mdat = 0;
+ 
++    ret = mov_preload_root(s->pb);
++    if (ret == AVERROR_EXIT) {
++        /* The caller's interrupt callback cut the read: nothing of it is
++         * parsed, and the root is read again on the next call. */
++        if (read_index >= 0)
++            mov->frag_index.item[read_index].headers_read = 0;
++        mov->root_cut = 1;
++        mov->root_cut_pos = avio_tell(s->pb);
++        return ret;
++    }
++    if (ret < 0)
++        return ret;
+     ret = mov_read_default(mov, s->pb, (MOVAtom){ AV_RL32("root"), INT64_MAX });
+     if (ret < 0)
+         return ret;
+@@ -11479,6 +11551,10 @@ static int mov_read_packet(AVFormatContext *s, AVPacket *pkt)
+ 
+         if ((ret = mov_switch_root(s, -1, -1)) < 0)
+             return ret;
++    } else if (mov->root_cut) {
++        /* the root atom an interrupt cut on the last call */
++        if ((ret = mov_switch_root(s, mov->root_cut_pos, -1)) < 0)
++            return ret;
+     }
+     sample = mov_find_next_sample(s, &st);
+     if (!sample || (mov->next_root_atom && sample->pos > mov->next_root_atom)) {
+@@ -11813,6 +11889,7 @@ static int mov_read_seek(AVFormatContext *s, int stream_index, int64_t sample_ti
+     if (stream_index >= s->nb_streams)
+         return AVERROR_INVALIDDATA;
+ 
++    mc->root_cut = 0;
+     for (i = 0; i < s->nb_streams; i++) {
+         MOVStreamContext *sc = s->streams[i]->priv_data;
+         if (sc && sc->cut_pkt)
