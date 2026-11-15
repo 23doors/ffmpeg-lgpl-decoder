@@ -1,0 +1,57 @@
+name: hls-fixtures
+
+# The pack's hls/http patches against tests/hls: builds the portfile's patch
+# series on the pinned FFmpeg as a minimal host build and runs the fixture
+# checks. Minutes, not the 13-target build.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/hls-fixtures.yml"
+      - "overlay-ports/ffmpeg/**"
+      - "tests/hls/**"
+  pull_request:
+    paths:
+      - ".github/workflows/hls-fixtures.yml"
+      - "overlay-ports/ffmpeg/**"
+      - "tests/hls/**"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl git python3 ffmpeg nasm zlib1g-dev libbz2-dev
+
+      - name: Build the harness
+        shell: bash
+        env:
+          JOBS: "4"
+        run: |
+          set -euo pipefail
+          sh tests/hls/setup.sh "${RUNNER_TEMP}/hls"
+
+      - name: Run the fixture checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh tests/hls/check.sh "${RUNNER_TEMP}/hls"
+
+      - name: Upload the check logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: hls-fixtures-logs
+          path: ${{ runner.temp }}/hls/out
+          if-no-files-found: ignore
