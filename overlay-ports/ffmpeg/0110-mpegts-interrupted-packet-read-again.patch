@@ -1,0 +1,53 @@
+mpegts: an interrupt in a packet is no lost packet or cut PES
+
+When the caller's interrupt callback stops a read of the input (with
+0099, hls reads a segment on after it), read_packet() got the part of a
+TS packet that was read and took it for the end: the bytes were lost,
+and the next call resynced on the next sync byte. mpegts_read_packet()
+flushed the PES packets it was collecting on that error, so a cut PES
+was handed on flagged corrupt ("PES packet size mismatch") and the rest
+of it dropped. One interrupt inside an audio PES of an hls TS segment
+lost a dozen audio frames and gave a corrupt one; a player that
+interrupts the read while paused (to stop prefetching) met it on every
+long pause, depending on where the read stood.
+
+When a packet's read comes back short and the input's error is
+AVERROR_EXIT, seek back to the packet's start (within the I/O buffer,
+which still holds what was read) and return AVERROR_EXIT: the packet is
+read whole on the next call. On AVERROR_EXIT, mpegts_read_packet() keeps
+the PES data read so far and returns the error; the next call reads on.
+A stale AVERROR_EXIT in the error of an input that is not hls already
+ends avio_read(), so other callers see no change.
+
+diff --git a/libavformat/mpegts.c b/libavformat/mpegts.c
+--- a/libavformat/mpegts.c
++++ b/libavformat/mpegts.c
+@@ -3190,6 +3190,15 @@ static int read_packet(AVFormatContext *s, uint8_t *buf, int raw_packet_size,
+ 
+     for (;;) {
+         len = ffio_read_indirect(pb, buf, TS_PACKET_SIZE, data);
++        if (len != TS_PACKET_SIZE && pb->error == AVERROR_EXIT) {
++            /* The caller's interrupt callback cut the packet: back to its
++             * start (the bytes are still in the buffer), so that it is read
++             * whole on the next call. */
++            int back = FFMAX(len, 0) + (raw_packet_size == TS_DVHS_PACKET_SIZE ? 4 : 0);
++            if (back)
++                avio_seek(pb, -back, SEEK_CUR);
++            return AVERROR_EXIT;
++        }
+         if (len != TS_PACKET_SIZE)
+             return len < 0 ? len : AVERROR_EOF;
+         /* check packet sync byte */
+@@ -3506,6 +3515,12 @@ static int mpegts_read_packet(AVFormatContext *s, AVPacket *pkt)
+     pkt->size = -1;
+     ts->pkt = pkt;
+     ret = handle_packets(ts, 0);
++    /* An interrupt is no end: the PES data read so far is kept for the next
++     * call, which reads on. */
++    if (ret == AVERROR_EXIT) {
++        av_packet_unref(ts->pkt);
++        return ret;
++    }
+     if (ret < 0) {
+         av_packet_unref(ts->pkt);
+         /* flush pes data left */
