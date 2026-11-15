@@ -2,15 +2,17 @@
 # Builds the hls fixture harness against the pack's FFmpeg: downloads the
 # portfile's REF (checked against its SHA512), applies the portfile's patch
 # series in order, configures a minimal static host build (the hls, mpegts,
-# mov, webvtt and aac demuxers, http/httpproxy/tcp/file/crypto/data (the
-# pack builds no httpproxy: here for the CONNECT check), the aac decoder for
-# the packed audio's stream info) and links hlsread and httpread, then
-# generates the fixture media with the system ffmpeg.
+# mov, webvtt and aac demuxers, http/https/httpproxy/tls/tcp/udp/file/crypto/data
+# with OpenSSL (the pack builds no httpproxy: here for the CONNECT checks and
+# https through a proxy), the aac decoder for the packed audio's stream info)
+# and links hlsread and httpread, then generates the fixture media with the
+# system ffmpeg.
 #
 # usage: tests/hls/setup.sh WORKDIR [LAST_PATCH]
 #   LAST_PATCH  apply the series only up to this number (e.g. 0097), to see
 #               the checks fail without the later patches
-# Needs: curl, git, a C compiler, make, python3, openssl, an ffmpeg with
+# Needs: curl, git, a C compiler, make, python3, openssl (the command and the
+# library, found by pkg-config), an ffmpeg with
 # libx264 and aac encoders on PATH (fixture media only). Builds with
 # make -j${JOBS:-4}.
 set -eu
@@ -44,10 +46,10 @@ mv "FFmpeg-$REF" src
 mkdir build
 (cd build
  ../src/configure --disable-everything --disable-programs --disable-doc \
-     --disable-autodetect --enable-static --disable-shared \
+     --disable-autodetect --enable-static --disable-shared --enable-openssl \
      --disable-avdevice --disable-avfilter --disable-swscale --disable-swresample \
      --enable-demuxer=hls,mpegts,mov,webvtt,aac \
-     --enable-protocol=http,httpproxy,tcp,file,crypto,data \
+     --enable-protocol=http,https,httpproxy,tls,tcp,udp,file,crypto,data \
      --enable-parser=h264,aac --enable-decoder=aac > configure.log
  make -j"${JOBS:-4}" libavformat/libavformat.a libavcodec/libavcodec.a libavutil/libavutil.a > make.log)
 
@@ -56,7 +58,7 @@ EXTRA=
 for tool in hlsread httpread; do
     cc -O1 -g -Ibuild -Isrc -o $tool "$HERE/$tool.c" \
         build/libavformat/libavformat.a build/libavcodec/libavcodec.a build/libavutil/libavutil.a \
-        -lz -lbz2 -lm -lpthread $EXTRA
+        $(pkg-config --libs openssl) -lz -lbz2 -lm -lpthread $EXTRA
 done
 
 M="$W/media"

@@ -117,6 +117,20 @@ vcpkg_from_github(
         0134-http-2ff5405601-reject-a-Content-Range-whose-end-lies-.patch
         0135-http-1bdc17e2c8-reject-control-characters-and-spaces-i.patch
         0136-http-6d898e0c17-reject-CR-and-LF-in-the-hostname.patch
+        0137-http-557ab6f2ab-make-short-seek-logic-more-robust.patch
+        0138-http-62006041cc-don-t-return-EOF-unless-we-actually-re.patch
+        0139-http-f87323a359-properly-fall-back-on-soft-seek-failur.patch
+        0140-http-bd51105806-infer-default-s-willclose-based-on-req.patch
+        0141-http-e5a3c5e409-accept-case-insensitive-Connection-hea.patch
+        0142-http-332ead500a-clear-the-status-code-before-each-requ.patch
+        0143-http-17afe2331a-drop-the-old-reply-when-seeking-past-t.patch
+        0144-http-5db1e097dc-end-a-read-at-the-end-offset-with-EOF.patch
+        0145-http-ca5300c9f4-end-or-continue-a-reply-at-the-end-of-.patch
+        0146-http-faab9c8e56-keep-complete-size-for-Content-Range-b.patch
+        0147-http-b77de7cb6f-clear-the-end-of-a-chunked-reply-for-e.patch
+        0148-http-8e9ce80c62-check-every-reply-against-the-requeste.patch
+        0149-http-461f48ece8-stop-at-the-end-offset-or-the-end-of-t.patch
+        0150-http-aebc956a22-free-the-zlib-state-when-the-open-fail.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

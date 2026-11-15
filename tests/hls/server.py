@@ -29,7 +29,11 @@ usage: server.py PORT [options]
   --long-tag LEN            /long/index.m3u8 has an EXT-X-DATERANGE line of LEN chars
                             (an X-ASSET-URI= this demuxer does not read)
   --ipv6                    listen on ::1, not 127.0.0.1
-  --cut SEQ                 VOD TS (/vod/, /aes/) segment SEQ, and /prog/file.ts for any SEQ:
+  --tls                     a CONNECT opens a TLS tunnel (a self-signed certificate made
+                            with the openssl command) to this server's own paths: an
+                            https URL read through this server as its proxy
+  --cut SEQ                 VOD TS (/vod/, /aes/) segment SEQ, and /prog/file.ts and
+                            every /range/ reply for any SEQ:
                             the whole Content-Length, half the body, then the
                             connection closes (a proxy that lost its upstream)
 Paths:
@@ -75,7 +79,10 @@ Paths:
                     "HTTP/x 200 Bad version", icy "ICY 200 OK", icy404 "ICY 404 Not
                     Found", ok "HTTP/1.1 200 OK", bare "HTTP/1.1 200")
   /badrange/file.ts a 206 with "Content-Range: bytes 100-50/4096"
-  /range/file.ts    /prog/file.ts with byte ranges (a Range gets 206), kept alive
+  /range/file.ts    /prog/file.ts with byte ranges (a Range gets 206), kept alive;
+                    query flags chunked, close, conn=V, star, loc, noranges, fail,
+                    onewrite change
+                    the reply (send_range()); --cut cuts every reply in half
   /rd/file.ts       on the first port (origin A): a redirect (302) to /range/file.ts
                     on the second (B)
   /rdc/file.ts?[c=SET-COOKIE][&h=HOST]  a redirect (with that Set-Cookie) to
@@ -94,6 +101,7 @@ Every request is logged with its time since start (seconds) to stdout.
 """
 import sys, time, os, threading, socket, subprocess
 import sys, time, os, threading, socket, urllib.parse
+import sys, time, os, threading, socket, urllib.parse, ssl, subprocess, tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # the media setup.sh generates (WORKDIR/media)
@@ -104,7 +112,7 @@ args = sys.argv[2:]
 opt = {}
 i = 0
 while i < len(args):
-    if args[i] in ("--chunked", "--ipv6", "--trailer"):
+    if args[i] in ("--chunked", "--ipv6", "--trailer", "--tls"):
         i += 1
         continue
     opt[args[i]] = args[i + 1]
@@ -139,6 +147,14 @@ LONG_TAG = int(opt.get("--long-tag", "0"))
 CHUNKED = "--chunked" in sys.argv
 TRAILER = "--trailer" in sys.argv
 IPV6 = "--ipv6" in sys.argv
+TLS = None
+if "--tls" in sys.argv:
+    tls_dir = tempfile.mkdtemp()
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2",
+                    "-subj", "/CN=localhost", "-keyout", tls_dir + "/key.pem",
+                    "-out", tls_dir + "/cert.pem"], check=True, capture_output=True)
+    TLS = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    TLS.load_cert_chain(tls_dir + "/cert.pem", tls_dir + "/key.pem")
 PORTS = [int(sys.argv[1])] + ([int(opt["--second-port"])] if "--second-port" in opt else [])
 init_requests = 0
 livefmp4_requests = 0
@@ -280,9 +296,21 @@ class H(BaseHTTPRequestHandler):
 
     def send_range(self, body, ctype):
         # byte ranges (a Range gets 206 with its Content-Range), the
-        # connection kept alive
+        # connection kept alive; the query changes the reply:
+        #   chunked=1  the body in chunked transfer encoding (no length)
+        #   close=1    the connection closed after the reply, no Connection header
+        #   conn=V     "Connection: V", the connection closed after the reply
+        #   star=1     the total in Content-Range is "*"; past the end: 416 "bytes */N"
+        #   loc=1      a "Location: /elsewhere" header with the reply
+        #   noranges=1 the Range ignored: 200 and the whole body
+        #   fail=1     a Range from past byte 0 answers 503
+        #   onewrite=1 the headers and the body in one write (the reader gets
+        #              body bytes with the headers)
+        # and --cut: half the reply's body, then the connection closes
+        q = urllib.parse.parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
+        flag = lambda k: q.get(k, [""])[0]
         first, last = 0, len(body) - 1
-        rng = self.headers.get("Range", "")
+        rng = "" if flag("noranges") else self.headers.get("Range", "")
         if rng.startswith("bytes="):
             a, b = rng[len("bytes="):].split("-", 1)
             first = int(a)
@@ -294,14 +322,42 @@ class H(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
+        if flag("fail") and first > 0:
+            self.send_response(503)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         self.send_response(206 if rng else 200)
         self.send_header("Content-Type", ctype)
         self.send_header("Accept-Ranges", "bytes")
         if rng:
-            self.send_header("Content-Range", "bytes %d-%d/%d" % (first, last, len(body)))
-        self.send_header("Content-Length", str(last - first + 1))
-        self.end_headers()
-        self.wfile.write(body[first:last + 1])
+            self.send_header("Content-Range", "bytes %d-%d/%s" % (first, last, "*" if flag("star") else len(body)))
+        if flag("loc"):
+            self.send_header("Location", "/elsewhere")
+        if flag("conn"):
+            self.send_header("Connection", flag("conn"))
+        part = body[first:last + 1]
+        if CUT is not None:
+            part = part[:len(part) // 2]
+            self.close_connection = True
+        if flag("chunked"):
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            for k in range(0, len(part), 4096):
+                self.wfile.write(b"%X\r\n" % len(part[k:k + 4096]) + part[k:k + 4096] + b"\r\n")
+            if CUT is None:
+                self.wfile.write(b"0\r\n\r\n")
+        elif flag("onewrite"):
+            self.send_header("Content-Length", str(last - first + 1))
+            self.wfile.write(b"".join(self._headers_buffer) + b"\r\n" + part)
+            self._headers_buffer = []
+        else:
+            self.send_header("Content-Length", str(last - first + 1))
+            self.end_headers()
+            self.wfile.write(part)
+        if flag("close") or flag("conn") or CUT is not None:
+            self.wfile.flush()
+            self.close_connection = True
 
     def redirect(self, url):
         self.send_response(302)
@@ -318,27 +374,38 @@ class H(BaseHTTPRequestHandler):
             self.path = "/" + (parts[3] if len(parts) > 3 else "")
         p = self.path.split("?")[0]
         port = self.server.server_address[1]
-        log("GET %s port=%d token=%s conn=%d%s%s host=%s" % (
+        log("GET %s port=%d token=%s conn=%d%s%s host=%s%s" % (
             p if len(p) < 200 else p[:60] + "...(%d)" % len(p),
             port, "yes" if self.headers.get("X-Token") else "no",
             self.client_address[1],
             " range=" + self.headers["Range"] if self.headers.get("Range") else "",
             " cookie=" + self.headers["Cookie"].replace(" ", "") if self.headers.get("Cookie") else "",
             self.headers.get("Host", "-") + (" proxied" if proxied else "") +
-            (" injected" if self.headers.get("X-Injected") else "")))
+            (" injected" if self.headers.get("X-Injected") else ""),
+            " tls" if isinstance(self.connection, ssl.SSLSocket) else ""))
         try:
             self.route(p)
         except (BrokenPipeError, ConnectionResetError):
             log("  client closed")
 
     def do_CONNECT(self):
-        # a proxy's tunnel: logged, answered 200, closed
-        log("CONNECT %s port=%d%s" % (self.path, self.server.server_address[1],
-                                      " injected" if self.headers.get("X-Injected") else ""))
+        # a proxy's tunnel: logged, answered 200, closed (with --tls: TLS
+        # through it to this server, its requests served as any other)
+        log("CONNECT %s port=%d conn=%d%s" % (self.path, self.server.server_address[1],
+                                              self.client_address[1],
+                                              " injected" if self.headers.get("X-Injected") else ""))
         self.send_response(200)
-        self.send_header("Content-Length", "0")
+        if not TLS:
+            self.send_header("Content-Length", "0")
         self.end_headers()
         self.close_connection = True
+        if TLS:
+            self.wfile.flush()
+            try:
+                tunnel = TLS.wrap_socket(self.connection, server_side=True)
+                H(tunnel, self.client_address, self.server)
+            except (ssl.SSLError, OSError) as e:
+                log("  tls: %s" % e)
 
     def send_raw(self, status, headers, body):
         # a reply as given, status line and all

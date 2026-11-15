@@ -1,0 +1,29 @@
+From 62006041cc3b4e4a5161711bf38e1020d21cd2f8 Mon Sep 17 00:00:00 2001
+From: Niklas Haas <git@haasn.dev>
+Date: Sun, 14 Jun 2026 12:53:36 +0200
+Subject: [PATCH] avformat/http: don't return EOF unless we actually read all
+ bytes
+
+Otherwise, this masquerades failure due to I/O as legitimate EOFs.
+
+Sponsored-by: nxtedition AB
+Signed-off-by: Niklas Haas <git@haasn.dev>
+
+(cherry picked from commit 62006041cc3b4e4a5161711bf38e1020d21cd2f8)
+---
+ libavformat/http.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/libavformat/http.c b/libavformat/http.c
+index 333c75b..720116d 100644
+--- a/libavformat/http.c
++++ b/libavformat/http.c
+@@ -2129,7 +2129,7 @@ static int http_read_stream(URLContext *h, uint8_t *buf, int size)
+     int conn_attempts = 1;
+ 
+     if (!s->hd)
+-        return AVERROR_EOF;
++        return s->off < s->filesize ? AVERROR(EIO) : AVERROR_EOF;
+ 
+     if (s->end_chunked_post && !s->end_header) {
+         err = http_read_header(h);

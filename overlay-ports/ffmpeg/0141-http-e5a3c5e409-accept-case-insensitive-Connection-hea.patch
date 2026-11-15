@@ -1,0 +1,30 @@
+From e5a3c5e409f2f5cbf94cb1cc7dbae5750dc8efc7 Mon Sep 17 00:00:00 2001
+From: Niklas Haas <git@haasn.dev>
+Date: Tue, 9 Jun 2026 12:37:04 +0200
+Subject: [PATCH] avformat/http: accept case-insensitive Connection header
+ value
+
+RFC 9110 defines this as case-insensitive, and some servers (e.g. MythTV)
+send it as "Close" instead of "close".
+
+See-Also: https://code.ffmpeg.org/FFmpeg/FFmpeg/issues/23222
+Signed-off-by: Niklas Haas <git@haasn.dev>
+
+(cherry picked from commit e5a3c5e409f2f5cbf94cb1cc7dbae5750dc8efc7)
+---
+ libavformat/http.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/libavformat/http.c b/libavformat/http.c
+index b7ae0c2..6138eb1 100644
+--- a/libavformat/http.c
++++ b/libavformat/http.c
+@@ -1540,7 +1540,7 @@ static int process_line(URLContext *h, char *line, int line_count, int *parsed_h
+         } else if (!av_strcasecmp(tag, "Proxy-Authenticate")) {
+             ff_http_auth_handle_header(&s->proxy_auth_state, tag, p);
+         } else if (!av_strcasecmp(tag, "Connection")) {
+-            if (!strcmp(p, "close"))
++            if (!av_strcasecmp(p, "close"))
+                 s->willclose = 1;
+         } else if (!av_strcasecmp(tag, "Server")) {
+             if (!av_strcasecmp(p, "AkamaiGHost")) {

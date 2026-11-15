@@ -1,0 +1,84 @@
+From ca5300c9f404d77a223ee26357ea55454a53e8f2 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Kacper=20Michaj=C5=82ow?= <kasper93@gmail.com>
+Date: Fri, 2 Oct 2026 03:46:08 +0200
+Subject: [PATCH] avformat/http: end or continue a reply at the end of its
+ range
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+End a compressed reply with EOF where its range ends instead of passing
+EAGAIN to the caller, as it is not continued with another request. A
+chunked one is marked as ended, so that later reads return EOF too
+instead of waiting for another chunk. Continue a chunked reply that ends
+at the end of its range before the end of the data with the next
+request, as a reply with a length already does.
+
+Signed-off-by: Kacper Michajłow <kasper93@gmail.com>
+
+Pack note: Merged into 0106's chunked-reply parser (the end of a chunked
+reply after its trailer, and the end without one): both continue a partial
+reply that ends at its range end, as upstream's http_buf_read() does.
+
+(cherry picked from commit ca5300c9f404d77a223ee26357ea55454a53e8f2)
+---
+ libavformat/http.c | 20 +++++++++++++++++---
+ 1 file changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/libavformat/http.c b/libavformat/http.c
+index 796e4e0..648f7cd 100644
+--- a/libavformat/http.c
++++ b/libavformat/http.c
+@@ -1991,6 +1991,13 @@ static uint64_t requested_end(HTTPContext *s)
+     return s->end_off ? FFMIN(s->end_off, s->filesize) : s->filesize;
+ }
+ 
++/* A partial reply that ends at its range end is continued. */
++static int chunked_reply_continues(HTTPContext *s)
++{
++    return s->range_end && s->off == s->range_end &&
++           s->range_end < requested_end(s);
++}
++
+ static int http_buf_read(URLContext *h, uint8_t *buf, int size)
+ {
+     HTTPContext *s = h->priv_data;
+@@ -2023,11 +2030,13 @@ static int http_buf_read(URLContext *h, uint8_t *buf, int size)
+                 line[s->chunk_line_len] = '\0';
+                 s->chunk_line_len = 0;
+                 if (s->chunk_trailer) {
++                    int more;
+                     if (*line)
+                         continue;    /* a trailer field: skipped */
++                    more = chunked_reply_continues(s);
+                     s->chunk_trailer = 0;
+-                    s->chunkend = 1;
+-                    return 0;
++                    s->chunkend = !more;
++                    return more ? AVERROR(EAGAIN) : 0;
+                 }
+                 if (*line)
+                     break;       /* skip CR LF from last chunk */
+@@ -2045,9 +2054,10 @@ static int http_buf_read(URLContext *h, uint8_t *buf, int size)
+                 return http_buf_read(h, buf, size);
+             }
+             else if (!s->chunksize) {
++                int more = chunked_reply_continues(s);
+                 av_log(h, AV_LOG_DEBUG, "Last chunk received, closing conn\n");
+                 ffurl_closep(&s->hd);
+-                return 0;
++                return more ? AVERROR(EAGAIN) : 0;
+             }
+             else if (s->chunksize == UINT64_MAX) {
+                 av_log(h, AV_LOG_ERROR, "Invalid chunk size %"PRIu64"\n",
+@@ -2107,6 +2117,10 @@ static int http_buf_read_compressed(URLContext *h, uint8_t *buf, int size)
+ 
+     if (s->inflate_stream.avail_in == 0) {
+         int read = http_buf_read(h, s->inflate_buffer, DECOMPRESS_BUF_SIZE);
++        if (read == AVERROR(EAGAIN)) {
++            s->chunkend = 1;
++            return AVERROR_EOF;
++        }
+         if (read <= 0)
+             return read;
+         s->inflate_stream.next_in  = s->inflate_buffer;

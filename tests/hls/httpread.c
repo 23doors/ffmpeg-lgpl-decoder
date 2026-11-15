@@ -1,7 +1,8 @@
 /* httpread: read an http input byte by byte through avio, for the http.c
  * checks (the requests a read or a seek makes, what comes back).
- * usage: httpread URL [-o key=value]... [-direct] [-get NAME]... CMD...
+ * usage: httpread URL [-o key=value]... [-direct] [-debug] [-get NAME]... CMD...
  *   -o key=value  an option of the open (http's)
+ *   -debug        log at AV_LOG_DEBUG (verbose otherwise)
  *   -direct       AVIO_FLAG_DIRECT: each read and seek goes to http as it is
  *                 (no avio buffer, no read-ahead in place of a seek)
  *   -get NAME     print the protocol's option NAME after the commands
@@ -52,10 +53,10 @@ int main(int argc, char **argv)
     AVDictionary *opts = NULL;
     AVIOContext *pb = NULL;
     const char *get[8];
-    int n_get = 0, flags = AVIO_FLAG_READ, i, ret;
+    int n_get = 0, flags = AVIO_FLAG_READ, level = AV_LOG_VERBOSE, i, ret;
 
     if (argc < 2) {
-        fprintf(stderr, "usage: httpread URL [-o key=value]... [-direct] [-get NAME]... CMD...\n");
+        fprintf(stderr, "usage: httpread URL [-o key=value]... [-direct] [-debug] [-get NAME]... CMD...\n");
         return 2;
     }
     crc_tab = av_crc_get_table(AV_CRC_32_IEEE_LE);
@@ -68,12 +69,14 @@ int main(int argc, char **argv)
             av_dict_set(&opts, kv, eq + 1, 0);
         } else if (!strcmp(argv[i], "-direct")) {
             flags |= AVIO_FLAG_DIRECT;
+        } else if (!strcmp(argv[i], "-debug")) {
+            level = AV_LOG_DEBUG;
         } else if (!strcmp(argv[i], "-get") && i + 1 < argc && n_get < 8) {
             get[n_get++] = argv[++i];
         } else
             break;
     }
-    av_log_set_level(AV_LOG_VERBOSE);
+    av_log_set_level(level);
     ret = avio_open2(&pb, argv[1], flags, NULL, &opts);
     av_dict_free(&opts);
     if (ret < 0) {

@@ -30,7 +30,7 @@
 # usage: tests/hls/check.sh WORKDIR [CHECK...]
 #   checks: b19 b20 trunc chunk-trailer sidx id3 i51 i52 bad-map vod-init init-dedup init-cut
 #           headers-origin i54 cut-body vswitch conn-host cookies status-line
-#           bad-range crlf
+#           bad-range crlf http-reply
 #   (default: all)
 set -u
 W=$(cd "$1" && pwd); shift
@@ -591,6 +591,103 @@ check_crlf() { # 0135, 0136: CR/LF in a proxied host or a CONNECT target is no r
     result crlf-connect "a CONNECT target with CR LF: no request ($req), the open fails" $?
 }
 
+# hread NAME K: httpread's K-th read line ("read N got M crc=C end=E")
+hread() { grep '^read ' "$OUT/$1.log" | sed -n "$2p"; }
+check_http_reply() { # 0137-0150: seeks, ends and ranged replies (June and October upstream series)
+    runh rr-ref "" /range/file.ts -direct r:1000 r:1000
+    runh rr-full "" /range/file.ts -direct ra
+    at1000=$(readcrc rr-ref 2); full=$(readcrc rr-full 1)
+    # 0137 (557ab6f2ab): a seek when the connection's short seek size is an
+    # error (ENOSYS: Windows' tcp, tls over a proxy's tunnel; here https
+    # through this server as the proxy) is no soft seek: one compared the
+    # error as unsigned, so any seek drained the whole rest of the reply first
+    runh short-seek-ref "" /range/file.ts -direct s:50000 r:1000
+    a=$((PORT + 1))
+    URL=https://localhost:$a/range/file.ts
+    runh short-seek "--tls" - -direct -debug -o http_proxy=http://127.0.0.1:$a \
+        -o multiple_requests=1 r:1000 s:50000 r:1000
+    URL=
+    tunnels=$(grep -c 'CONNECT ' "$OUT/short-seek.server.log")
+    ! grep -q 'Soft-seeking' "$OUT/short-seek.log" && [ "$tunnels" = 2 ] &&
+        [ "$(readcrc short-seek 2)" = "$(readcrc short-seek-ref 1)" ]
+    ok=$?
+    result short-seek "https through a proxy, a seek on: no drain, a new tunnel ($tunnels; $(grep -o 'draining [0-9]* ' "$OUT/short-seek.log"))" $ok
+    # a seek back inside a reply on a connection the server closes after it:
+    # the soft seek drained it and asked again on the dead connection, the
+    # seek failed with EOF and the input ended (0139 f87323a359: a new
+    # connection then; 0140 bd51105806: no soft seek when "Connection:
+    # close" was sent, whatever the reply says; 0141 e5a3c5e409: "Close"
+    # is close)
+    runh seek-closed "" "/range/file.ts?close=1" -direct -o multiple_requests=1 r:140000 s:1000 r:1000
+    got=$(readcrc seek-closed 2)
+    grep -q '^seek 1000 ret=1000' "$OUT/seek-closed.log" && [ -n "$at1000" ] && [ "$got" = "$at1000" ]
+    ok=$?
+    result seek-closed "keep-alive asked, the server closes: a seek back reads on a new connection ($(hread seek-closed 2))" $ok
+    runh seek-close-sent "" /range/file.ts -direct -debug r:140000 s:1000 r:1000
+    got=$(readcrc seek-close-sent 2)
+    ! grep -q 'Soft-seeking' "$OUT/seek-close-sent.log" && [ "$got" = "$at1000" ]
+    ok=$?
+    result seek-close-sent "Connection: close sent, none in the reply: a seek back is no soft seek ($(hread seek-close-sent 2))" $ok
+    runh seek-Close "" "/range/file.ts?conn=Close" -direct -debug -o multiple_requests=1 r:140000 s:1000 r:1000
+    got=$(readcrc seek-Close 2)
+    ! grep -q 'Soft-seeking' "$OUT/seek-Close.log" && [ "$got" = "$at1000" ]
+    ok=$?
+    result seek-Close "\"Connection: Close\" in the reply: a seek back is no soft seek ($(hread seek-Close 2))" $ok
+    # 0138 (62006041cc): a read with no connection before the end is an
+    # error, not the end (the seek's new request failed, 503)
+    runh io-not-eof "" "/range/file.ts?fail=1" -direct -o multiple_requests=1 r:140000 s:1000 r:100
+    hread io-not-eof 2 | grep -q 'got 0 .* end=Input/output error'
+    ok=$?
+    result io-not-eof "after a failed seek, a read is EIO, not EOF ($(hread io-not-eof 2))" $ok
+    # 0143 (17afe2331a): a seek past the end drops the old reply (its
+    # buffered bytes, which came with the headers, were read at the new
+    # offset)
+    runh past-end "" "/range/file.ts?onewrite=1" -direct r:1000 s:151600 r:100
+    hread past-end 2 | grep -q 'got 0 .* end=eof'
+    ok=$?
+    result past-end "a read after a seek past the end gets nothing ($(hread past-end 2))" $ok
+    # 0144 (5db1e097dc): a read up to end_offset ends with EOF (it was EIO)
+    runh end-offset "" /range/file.ts -direct -o end_offset=5000 ra
+    hread end-offset 1 | grep -q 'got 5000 .* end=eof'
+    ok=$?
+    result end-offset "end_offset=5000: 5000 bytes, then EOF ($(hread end-offset 1))" $ok
+    # 0149 (461f48ece8): an end_offset past the file's end asks for nothing
+    # past it (a request for the bytes past the end got 416, the read's end)
+    runh end-past-file "" /range/file.ts -direct -o multiple_requests=1 -o end_offset=200000 ra
+    req=$(grep -c 'GET /range/' "$OUT/end-past-file.server.log")
+    hread end-past-file 1 | grep -q 'got 151528 .* end=eof' && [ "$req" = 1 ]
+    ok=$?
+    result end-past-file "end_offset past the end: the file, EOF, one request ($req; $(hread end-past-file 1))" $ok
+    # 0145 (ca5300c9f4): a chunked partial reply (request_size) is continued
+    # with the next request (it ended at the first range's end)
+    runh chunk-range "" "/range/file.ts?chunked=1" -direct -o multiple_requests=1 -o request_size=10000 ra
+    got=$(readcrc chunk-range 1)
+    [ -n "$full" ] && [ "$got" = "$full" ]
+    ok=$?
+    result chunk-range "chunked 10000-byte ranges read on to the end ($(hread chunk-range 1))" $ok
+    # 0146 (faab9c8e56): "Content-Range: bytes A-B/*" is no size of 0 (the
+    # read got nothing); its end is the 416 past it
+    runh star-total "" "/range/file.ts?star=1" -direct ra
+    runh star-parts "" "/range/file.ts?star=1" -direct -o multiple_requests=1 -o request_size=50000 ra
+    a=$(readcrc star-total 1); b=$(readcrc star-parts 1)
+    [ "$a" = "$full" ] && [ "$b" = "$full" ] && hread star-parts 1 | grep -q 'end=eof'
+    ok=$?
+    result star-total "a total of * reads the whole file, in one reply ($(hread star-total 1)) and in 50000-byte ones ($(hread star-parts 1))" $ok
+    # 0147 (b77de7cb6f): a chunked reply after one read to its end (a seek
+    # on the same context, a Plex transcode's) is read (it was taken as ended)
+    runh chunk-seek "" "/range/file.ts?chunked=1" -direct -o multiple_requests=1 ra s:1000 r:1000
+    got=$(readcrc chunk-seek 2)
+    [ "$got" = "$at1000" ]
+    ok=$?
+    result chunk-seek "a chunked reply read to its end, a seek back: the next chunked reply is read ($(hread chunk-seek 2))" $ok
+    # 0148 (8e9ce80c62): a reply with a Location header is checked against
+    # the range asked for (a 200 from byte 0 was handed on as byte 5000's)
+    runh range-checked "" "/range/file.ts?noranges=1&loc=1" -direct r:1000 s:5000 r:100
+    ! grep -q '^seek 5000 ret=5000' "$OUT/range-checked.log" && grep -q 'Unexpected offset: expected 5000, got 0' "$OUT/range-checked.log"
+    ok=$?
+    result range-checked "a 200 with a Location to a Range from 5000: the seek fails ($(grep '^seek' "$OUT/range-checked.log"))" $ok
+}
+
 # vswitch's helpers. first NAME STREAM: "pts dts key=K" of the stream's first
 # packet after the last group of events (hlsread numbers the groups of events
 # that fire together, groups= in its summary: crcaN covers the packets after
@@ -754,6 +851,6 @@ check_vswitch() { # 0113-0116: a video playlist needed anew starts at its segmen
     result afresh-late-audio "late discards, a -> a2 during playback: a2 at the position ($(first afresh-late-audio 1)), its packets a's (crc $got, $want)" $ok
 }
 
-CHECKS=${*:-b19 b20 trunc chunk_trailer sidx id3 i51 i52 bad_map vod_init init_dedup init_cut headers_origin i54 cut_body vswitch conn_host cookies status_line bad_range crlf}
+CHECKS=${*:-b19 b20 trunc chunk_trailer sidx id3 i51 i52 bad_map vod_init init_dedup init_cut headers_origin i54 cut_body vswitch conn_host cookies status_line bad_range crlf http_reply}
 for c in $CHECKS; do "check_$(echo "$c" | tr - _)"; done
 exit $FAIL
