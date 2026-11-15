@@ -1,4 +1,4 @@
-mov: an interrupt in a fragment's sample is no lost or cut sample
+mov: an interrupt in a sample is no lost or cut sample
 
 When the caller's interrupt callback stops a read of the input (with
 0099, hls reads a segment on after it), mov_read_packet() lost samples:
@@ -11,25 +11,70 @@ segment (fMP4/CMAF HLS) gave a corrupt access unit and two lost ones:
 artefacts until the next keyframe. A player that interrupts the read
 while paused (to stop prefetching) met it on every long pause.
 
-When the seek to a sample fails and the input's error is AVERROR_EXIT
-(the last read ended in the interrupt), give the sample back and return
-AVERROR_EXIT: it is asked for again on the next call. When a sample's
-read comes back short with that error, drop what was read and seek back
-to the sample's start; the seek is within the I/O buffer when it still
-holds the sample's start, and the sample is read again on the next call.
-Else (a sample larger than the buffer, or one that spanned a refill) it
-is lost, but not handed on cut. A stale AVERROR_EXIT in the error of an
-input that is not hls already ends avio_read(), so other callers see no
-change. Only the plain sample read: the EIA-608, APV and IAMF reads
-are left as they are.
+When a sample's read ends in that error (the input's error is
+AVERROR_EXIT: the last read ended in the interrupt), keep what was read
+of it in the stream's context, give the sample back and return
+AVERROR_EXIT. On the next call for that sample the read goes on where it
+stopped (the input's position is the end of what was kept) and appends
+the rest, so the sample is handed on whole and once, whatever its size
+and wherever the I/O buffer was refilled: a keyframe larger than the
+buffer (avio_read() reads it past the buffer), one begun before a refill,
+one whose read got nothing at all. What was kept is dropped on a seek, on
+hls's reset of the input and on close. When the seek to a sample fails
+with that error, the sample is given back as well. A stale AVERROR_EXIT
+in the error of an input that is not hls already ends avio_read() (hls
+clears it once data or the end comes, 0077 and 0112), so other callers
+see no change. Only the plain sample read: the EIA-608, APV and IAMF
+reads are left as they are.
 
+diff --git a/libavformat/isom.h b/libavformat/isom.h
+--- a/libavformat/isom.h
++++ b/libavformat/isom.h
+@@ -284,6 +284,9 @@ typedef struct MOVStreamContext {
+ 
+     struct IAMFDemuxContext *iamf;
+     int iamf_stream_offset;
++
++    AVPacket *cut_pkt;    ///< what was read of a sample an interrupt cut, its pos the sample's
++    int64_t cut_index;    ///< that sample's index
+ } MOVStreamContext;
+ 
+ typedef struct HEIFItemRef {
 diff --git a/libavformat/mov.c b/libavformat/mov.c
 --- a/libavformat/mov.c
 +++ b/libavformat/mov.c
-@@ -11498,6 +11498,13 @@ static int mov_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -10125,6 +10125,7 @@ static void mov_free_stream_context(AVFormatContext *s, AVStream *st)
+     }
+ 
+     av_freep(&sc->tts_data);
++    av_packet_free(&sc->cut_pkt);
+     for (int i = 0; i < sc->drefs_count; i++) {
+         av_freep(&sc->drefs[i].path);
+         av_freep(&sc->drefs[i].dir);
+@@ -11464,6 +11465,8 @@ static int mov_read_packet(AVFormatContext *s, AVPacket *pkt)
+             // Clear current sample
+             mov_current_sample_set(msc, 0);
+             msc->tts_index = 0;
++            if (msc->cut_pkt)
++                av_packet_unref(msc->cut_pkt);
+ 
+             // Discard current index entries
+             avsti = ffstream(avst);
+@@ -11496,8 +11499,22 @@ static int mov_read_packet(AVFormatContext *s, AVPacket *pkt)
+     }
+ 
      if (st->discard != AVDISCARD_ALL || sc->iamf) {
-         int64_t ret64 = avio_seek(sc->pb, sample->pos, SEEK_SET);
-         if (ret64 != sample->pos) {
+-        int64_t ret64 = avio_seek(sc->pb, sample->pos, SEEK_SET);
+-        if (ret64 != sample->pos) {
++        /* What was read of this sample before an interrupt cut it (on the
++         * last call): the read goes on after it. */
++        int cut = sc->cut_pkt && sc->cut_pkt->size && sc->cut_index == current_index &&
++                  sc->cut_pkt->pos == sample->pos ? sc->cut_pkt->size : 0;
++        int64_t ret64;
++        if (!cut && sc->cut_pkt)
++            av_packet_unref(sc->cut_pkt);
++        ret64 = avio_seek(sc->pb, sample->pos + cut, SEEK_SET);
++        if (ret64 != sample->pos + cut) {
 +            /* The caller's interrupt callback cut the last read (its
 +             * AVERROR_EXIT is latched in the I/O context): the sample is
 +             * asked for again on the next call. */
@@ -40,23 +85,48 @@ diff --git a/libavformat/mov.c b/libavformat/mov.c
              av_log(mov->fc, AV_LOG_ERROR, "stream %d, offset 0x%"PRIx64": partial file\n",
                     sc->ffindex, sample->pos);
              if (should_retry(sc->pb, ret64)) {
-@@ -11555,8 +11562,18 @@ static int mov_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -11555,8 +11572,29 @@ static int mov_read_packet(AVFormatContext *s, AVPacket *pkt)
                  return AVERROR_INVALIDDATA;
              }
              ret = av_get_packet(sc->pb, pkt, au_size);
 -        } else
+-            ret = av_get_packet(sc->pb, pkt, sample->size);
 +        } else {
-             ret = av_get_packet(sc->pb, pkt, sample->size);
-+            if (ret >= 0 && ret < sample->size && sc->pb->error == AVERROR_EXIT) {
-+                /* The interrupt cut the sample. Back to its start when the
-+                 * buffer still holds it (an in-buffer seek: it is read again
-+                 * on the next call); else it is lost, but not handed on cut. */
-+                av_packet_unref(pkt);
-+                if (avio_seek(sc->pb, sample->pos, SEEK_SET) == sample->pos)
-+                    mov_current_sample_dec(sc);
++            if (cut) {
++                av_packet_move_ref(pkt, sc->cut_pkt);
++                ret = av_append_packet(sc->pb, pkt, sample->size - cut);
++            } else
++                ret = av_get_packet(sc->pb, pkt, sample->size);
++            if (sc->pb->error == AVERROR_EXIT &&
++                (ret < 0 ? ret == AVERROR_EXIT : pkt->size < sample->size)) {
++                /* The caller's interrupt callback cut the read: what came of
++                 * the sample is kept, and the sample is asked for again on
++                 * the next call, which reads its rest (the input goes on
++                 * where it stopped). */
++                if (pkt->size) {
++                    if (!sc->cut_pkt && !(sc->cut_pkt = av_packet_alloc()))
++                        return AVERROR(ENOMEM);
++                    pkt->flags &= ~AV_PKT_FLAG_CORRUPT;
++                    av_packet_move_ref(sc->cut_pkt, pkt);
++                    sc->cut_index = current_index;
++                }
++                mov_current_sample_dec(sc);
 +                return AVERROR_EXIT;
 +            }
 +        }
          if (ret < 0) {
              if (should_retry(sc->pb, ret)) {
                  mov_current_sample_dec(sc);
+@@ -11775,6 +11813,12 @@ static int mov_read_seek(AVFormatContext *s, int stream_index, int64_t sample_ti
+     if (stream_index >= s->nb_streams)
+         return AVERROR_INVALIDDATA;
+ 
++    for (i = 0; i < s->nb_streams; i++) {
++        MOVStreamContext *sc = s->streams[i]->priv_data;
++        if (sc && sc->cut_pkt)
++            av_packet_unref(sc->cut_pkt);
++    }
++
+     st = s->streams[stream_index];
+     sti = ffstream(st);
+     sample = mov_seek_stream(s, st, sample_time, flags);
