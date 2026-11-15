@@ -13,7 +13,10 @@
 # kf-switch-fmp4, afresh-audio, kf-late-switch, kf-late-switch-fmp4,
 # afresh-late-audio, live-switch, live-switch-late) and init-seek; up to
 # 0114, the ones that count init section requests (0115: kf-switch-fmp4,
-# init-seek, kf-late-switch-fmp4) and live-switch, live-switch-late (0116).
+# init-seek, latemap-after, kf-late-switch-fmp4) and live-switch,
+# live-switch-late (0116). latemap-before holds what the series did before
+# 0115 (no init section served before a segment that maps none): it passes
+# up to 0114 too.
 #
 # usage: tests/hls/check.sh WORKDIR [CHECK...]
 #   checks: b19 b20 trunc chunk-trailer sidx id3 i51 i52 init-dedup init-cut
@@ -330,11 +333,12 @@ check_cut_body() { # 0107: a cut body from a server without ranges is not read a
 }
 
 # vswitch's helpers. first NAME STREAM: "pts dts key=K" of the stream's first
-# packet after the last events (hlsread numbers the groups of events that
-# fire together: crcaN covers the packets after the last group too)
+# packet after the last group of events (hlsread numbers the groups of events
+# that fire together, groups= in its summary: crcaN covers the packets after
+# the last group too); nothing when the stream gave none after it
 first() {
-    e=$(sed -n 's/^first \([0-9]*\) .*/\1/p' "$OUT/$1.log" | sort -n | tail -1)
-    [ -n "$e" ] && grep "^first $e $2 " "$OUT/$1.log" | head -1 | cut -d' ' -f4-
+    e=$(field "$1" groups)
+    [ -n "$e" ] && [ "$e" -gt 0 ] && grep "^first $e $2 " "$OUT/$1.log" | head -1 | cut -d' ' -f4-
 }
 # evdts NAME: the dts of the packet the (last) events fired at, the position
 evdts() { sed -n 's/^event [0-9]* at [0-9.-]* dts \([0-9.-]*\):.*/\1/p' "$OUT/$1.log" | tail -1; }
@@ -431,6 +435,22 @@ check_vswitch() { # 0113-0116: a video playlist needed anew starts at its segmen
     keyed kf-first-seg 3 kf-ref0-v2 0 && near kf-first-seg 3 1.3 1.5
     ok=$?
     result kf-first-seg "v1 -> v2 and a seek to 2 s: v2 from the first segment's keyframe ($(first kf-first-seg 3))" $ok
+    # an EXT-X-MAP from the fourth segment on (/mv/latemap: its init.ts holds
+    # media packets from 30 s, so an init section served where none is mapped
+    # shows): a seek back before the first MAP, the init section buffered,
+    # serves none (0115 rewound the buffered one, and update_init_section()
+    # forgot it without ending its serve: the 30 s packets came first); a
+    # seek past it serves the buffered one again, as a fresh read fetches it
+    run latemap-ref1 "" /mv/latemap/index.m3u8 -q -ev 0:seek:1:0
+    run latemap-before "" /mv/latemap/index.m3u8 -q -ev 28:seek:1:0
+    keyed latemap-before 0 latemap-ref1 0 && near latemap-before 0 1.3 1.5
+    ok=$?
+    result latemap-before "a seek before the first EXT-X-MAP, its init section buffered: none served ($(first latemap-before 0))" $ok
+    run latemap-ref25 "" /mv/latemap/index.m3u8 -q -ev 0:seek:25:0
+    run latemap-after "" /mv/latemap/index.m3u8 -q -ev 28:seek:25:0
+    keyed latemap-after 0 latemap-ref25 0 && [ "$(gets latemap-after /mv/latemap/init.ts)" = 1 ]
+    ok=$?
+    result latemap-after "a seek past the first EXT-X-MAP: the buffered init section served again, as a fresh read's ($(first latemap-after 0)), asked for once ($(gets latemap-after /mv/latemap/init.ts))" $ok
     # live (/live/master.m3u8: two variants of the live TS, 1 s segments,
     # 0 video 1 audio, 2 video 3 audio), switched 7.5 s after the first
     # packet, no seek: the new variant's video starts at the position, as
@@ -444,9 +464,10 @@ check_vswitch() { # 0113-0116: a video playlist needed anew starts at its segmen
         run $name "" /live/master.m3u8 -q -maxtime 16 $late -discard 2 -discard 3 \
             -ev +7.5:off:0 -ev +7.5:off:1 -ev +7.5:on:2 -ev +7.5:on:3
         pos=$(evdts $name)
-        near $name 2 "$(awk -v p="$pos" 'BEGIN { print p - 0.05 }')" "$(awk -v p="$pos" 'BEGIN { print p + 0.6 }')"
+        [ -n "$pos" ] &&
+            near $name 2 "$(awk -v p="$pos" 'BEGIN { print p - 0.05 }')" "$(awk -v p="$pos" 'BEGIN { print p + 0.6 }')"
         ok=$?
-        result $name "live${late:+ (late discards)}, variant switch at $pos: the new video at the position ($(first $name 2))" $ok
+        result $name "live${late:+ (late discards)}, variant switch at ${pos:-(no event fired)}: the new video at the position ($(first $name 2))" $ok
     done
     # RMP's order: avformat_find_stream_info() with every stream, the
     # discards after it (-late). hls reads the discarded playlists on until

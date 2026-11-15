@@ -53,6 +53,9 @@ Paths:
   /mv/fmp4.m3u8     the video-only variants in fMP4 (f1, f2, EXT-X-MAP) with the audio a
   /mv/NAME/...      the media playlists, init sections and segments of v1, v2, m1, m2, n1,
                     f1, f2, a (a2 is a)
+  /mv/latemap/index.m3u8  v1's segments with an EXT-X-MAP from the fourth on; its
+                    init.ts is v1's s5.ts (media packets, at 30 s: an init section
+                    served where none is mapped shows as packets from 30 s)
   /xo/index.m3u8    VOD TS on either port: s0 here, s2 by a redirect to the
                     other port, s1 on the other port (a new request on the
                     connection that redirect left open), s3 by a redirect to
@@ -322,6 +325,19 @@ class H(BaseHTTPRequestHandler):
                   '#EXT-X-STREAM-INF:BANDWIDTH=400000,RESOLUTION=320x240,AUDIO="aud"\nf1/index.m3u8\n'
                   '#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=480x360,AUDIO="aud"\nf2/index.m3u8\n')
             return self.send(200, pl.encode(), mpegurl)
+        if p == "/mv/latemap/index.m3u8":
+            pl, n = "", 0
+            for line in open(os.path.join(D, "mv", "v1", "index.m3u8")).read().splitlines(True):
+                if line.startswith("#EXTINF"):
+                    if n == 3:
+                        pl += '#EXT-X-MAP:URI="init.ts"\n'
+                    n += 1
+                elif not line.startswith("#"):
+                    line = "../v1/" + line
+                pl += line
+            return self.send(200, pl.encode(), mpegurl)
+        if p == "/mv/latemap/init.ts":
+            return self.send(200, open(os.path.join(D, "mv", "v1", "s5.ts"), "rb").read(), "video/mp2t")
         if p.startswith("/mv/"):
             name, f = p[len("/mv/"):].split("/", 1)
             if name == "a2":

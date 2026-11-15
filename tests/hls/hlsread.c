@@ -25,8 +25,10 @@
  *                 PTS run in order on the same packet ("event <n> at <pts_s>
  *                 dts <dts_s>: ...", the packet's). After them each
  *                 stream's first packet prints "first <event> <stream>
- *                 <pts_s> <dts_s> key=<0|1>"; the summary's crcaN covers
- *                 stream N's packets after the last event
+ *                 <pts_s> <dts_s> key=<0|1>" (<event>: the group of events
+ *                 that fired together, from 1; the summary's groups= says
+ *                 how many fired); the summary's crcaN covers stream N's
+ *                 packets after the last group
  * Prints per packet "pkt <t_wall> <stream> <pts_s> <size>" (subtitle packets
  * with their text), and a summary: packets per stream, a CRC of each
  * stream's packet data (crcN, the packets in order), the largest pts step
@@ -315,7 +317,7 @@ int main(int argc, char **argv)
         }
         av_packet_unref(pkt);
     }
-    printf("summary: exits=%d", exits);
+    printf("summary: exits=%d groups=%d", exits, epoch);
     for (int i = 0; i < (int)s->nb_streams && i < 16; i++)
         printf(" s%d=%d", i, n[i]);
     for (int i = 0; i < (int)s->nb_streams && i < 16; i++)
