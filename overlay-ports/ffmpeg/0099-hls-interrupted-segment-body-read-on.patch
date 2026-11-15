@@ -26,9 +26,8 @@ What it covers: an unencrypted segment's body over http, with a
 Content-Length or chunked (0106 keeps a chunk-size line an interrupt
 cuts), and an AES-128 one's (0105: crypto took the interrupt for the
 end). The subdemuxer decides what it makes of the interrupted read: mpegts
-reads on with no loss; mov drops the sample it was reading (it moved past
-the sample before reading it, and the playlist's buffer cannot seek back),
-at most one per interrupt.
+reads on with no loss; mov, by itself, hands the cut sample on flagged
+corrupt and loses the one or two after it (0108 reads the sample again).
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
 --- a/libavformat/hls.c
