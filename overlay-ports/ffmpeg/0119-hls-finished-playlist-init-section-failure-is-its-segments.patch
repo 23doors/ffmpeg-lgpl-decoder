@@ -17,7 +17,7 @@ for, not read from that connection.
 diff --git a/libavformat/hls.c b/libavformat/hls.c
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -2257,11 +2257,12 @@ restart:
+@@ -2260,11 +2260,12 @@ restart:
  
          /* load/update Media Initialization Section, if any */
          ret = update_init_section(v, seg);

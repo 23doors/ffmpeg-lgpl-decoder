@@ -13,7 +13,7 @@ move only when room was left.
 diff --git a/libavformat/hls.c b/libavformat/hls.c
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -2393,15 +2393,17 @@ restart:
+@@ -2396,15 +2396,17 @@ restart:
      /* Each WebVTT segment is a file of its own, which need not end in a blank
       * line: read on as one stream, the next segment's header lines would join
       * the last cue's text. A segment that follows another and starts as a
