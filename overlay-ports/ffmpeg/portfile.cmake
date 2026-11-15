@@ -71,6 +71,7 @@ vcpkg_from_github(
         0097-hls-d9242028a6-fix-reading-byte-range-segments-after-the-first.patch
         0098-hls-webvtt-segment-starts-a-new-block.patch
         0099-hls-interrupted-segment-body-read-on.patch
+        0100-hls-cut-playlist-line-fails.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

@@ -1,0 +1,77 @@
+hls: a playlist line cut to fit the line buffer fails the load
+
+parse_playlist() reads each line into a MAX_URL_SIZE buffer (16384 in the
+pack, 0051) with ff_get_chomp_line(), which drops what does not fit and
+says nothing. An absolute segment, variant or key address longer than the
+buffer was then asked for cut: a signed or session-carrying address names
+nothing cut (the server answers 400), the segment fails and is skipped,
+and nothing says why. A relative one only failed because joining it to
+the base address overflowed in turn ("invalid:truncated").
+
+Read the lines with a local copy of ff_get_chomp_line() that also says
+whether characters were dropped. A cut line that names an address (a URI
+line, or a tag with a URI attribute) fails the load with
+AVERROR_INVALIDDATA and an error naming the limit; any other cut line (a
+long title, attribute list or comment) loses only what this demuxer does
+not read and is read as before, with a warning. A failed reload of a live
+playlist is handled as any other garbled answer (0071).
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -1002,6 +1002,30 @@ static void set_subtitle_io_opts(HLSContext *c, AVDictionary **opts)
+     av_dict_set_int(opts, "reconnect_max_retries", 0, 0);
+ }
+ 
++/* ff_get_chomp_line(), which also says whether the line had more characters
++ * than the buffer holds: ff_get_line() drops them without a word. */
++static int get_chomp_line(AVIOContext *s, char *buf, int maxlen, int *cut)
++{
++    int i = 0;
++    char c;
++
++    *cut = 0;
++    do {
++        c = avio_r8(s);
++        if (c && i < maxlen - 1)
++            buf[i++] = c;
++        else if (c && !av_isspace(c))
++            *cut = 1;
++    } while (c != '\n' && c != '\r' && c);
++    if (c == '\r' && avio_r8(s) != '\n' && !avio_feof(s))
++        avio_skip(s, -1);
++
++    buf[i] = 0;
++    while (i > 0 && av_isspace(buf[i - 1]))
++        buf[--i] = '\0';
++    return i;
++}
++
+ static int parse_playlist(HLSContext *c, const char *url,
+                           struct playlist *pls, AVIOContext *in)
+ {
+@@ -1094,7 +1118,23 @@ static int parse_playlist(HLSContext *c, const char *url,
+         pls->type = PLS_TYPE_UNSPECIFIED;
+     }
+     while (!avio_feof(in)) {
+-        ff_get_chomp_line(in, line, sizeof(line));
++        int cut;
++
++        get_chomp_line(in, line, sizeof(line), &cut);
++        /* A cut address would be asked for cut (a server answers 400) or
++         * name something else; a cut title, attribute list or comment
++         * loses only what this demuxer does not read. */
++        if (cut && (line[0] != '#' || strstr(line, "URI="))) {
++            av_log(c->ctx, AV_LOG_ERROR,
++                   "Playlist line longer than %d characters: %.64s...\n",
++                   (int)sizeof(line) - 1, line);
++            ret = AVERROR_INVALIDDATA;
++            goto fail;
++        } else if (cut) {
++            av_log(c->ctx, AV_LOG_WARNING,
++                   "Playlist line longer than %d characters cut: %.64s...\n",
++                   (int)sizeof(line) - 1, line);
++        }
+         if (av_strstart(line, "#EXT-X-STREAM-INF:", &ptr)) {
+             if (pls) {
+                 av_log(c->ctx, AV_LOG_ERROR,
