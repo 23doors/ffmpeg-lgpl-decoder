@@ -1,0 +1,44 @@
+http: a cut body the server cannot resume is not read again from its start
+
+With reconnect_streamed, http_read_stream() reconnects a streamed input
+(a server without Accept-Ranges, or seekable=0) at byte 0, since such a
+request cannot ask for an offset. For a body of a known size that was
+cut after data came (a proxy passing on an upstream it lost), that
+returns the body's start again as if it followed what was read: the
+caller gets the bytes up to the cut twice. When the cut stays, each
+reconnect brings data, so the backoff and the attempt count start over
+on every read and the input loops on the same bytes without end, with
+no error. A player reading a progressive file (or, with 0070, which
+passes reconnect_streamed on to every hls request, a segment) stalls
+at the cut for good.
+
+End such a read with AVERROR(EIO), as a seekable input without
+reconnect does when its body is cut: a progressive input fails, hls
+moves on from the segment. A body with no size (a live stream, a
+chunked reply) still reconnects at byte 0: a live stream does not repeat
+its bytes, and a chunked one cannot be told apart from it. A reply cut
+before its first byte still reconnects, with the backoff.
+
+diff --git a/libavformat/http.c b/libavformat/http.c
+--- a/libavformat/http.c
++++ b/libavformat/http.c
+@@ -1973,6 +1973,19 @@ retry:
+         if (h->is_streamed && !s->reconnect_streamed)
+             break;
+ 
++        /* A body of a known size from a server that cannot resume it (no
++         * ranges) was cut after data came: a reconnect would ask for it
++         * from byte 0 again, and what came again would follow what was
++         * read, cut at the same byte without end if the cut stays. End the
++         * read with an error instead; a stream without a size (a live
++         * stream) still reconnects, its bytes do not repeat. */
++        if (h->is_streamed && s->off > 0 && s->filesize != UINT64_MAX && is_premature) {
++            av_log(h, AV_LOG_WARNING, "Body cut at %"PRIu64" of %"PRIu64" bytes and the "
++                   "server cannot resume it: not reconnecting, error=%s.\n",
++                   s->off, s->filesize, av_err2str(read_ret));
++            return AVERROR(EIO);
++        }
++
+         if (!(s->reconnect && is_premature) &&
+             !(s->reconnect_at_eof && read_ret == AVERROR_EOF)) {
+             if (is_premature)

@@ -1,12 +1,13 @@
 #!/bin/sh
-# The fixture checks of patches 0098-0106 (and the I54 trace) against a
+# The fixture checks of patches 0098-0107 (and the I54 trace) against a
 # harness built by setup.sh. Each check prints PASS or FAIL; the exit status
 # is the number of failures. With the series only up to 0097
 # (setup.sh WORKDIR 0097) all but xo-ipv6 and i54 fail (without 0104 the
 # headers go everywhere, IPv6 included).
 #
 # usage: tests/hls/check.sh WORKDIR [CHECK...]
-#   checks: b19 b20 id3 i51 i52 init-dedup headers-origin i54 (default: all)
+#   checks: b19 b20 id3 i51 i52 init-dedup headers-origin i54 cut-body
+#   (default: all)
 set -u
 W=$(cd "$1" && pwd); shift
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -190,7 +191,29 @@ check_i54() { # trace: two 404s in a row, RMP's options, a player 2-3 s behind t
         result i54_$lsi "each 404 asked for at most twice (an early open and once when due, 0075)" $?
     done
 }
+check_cut_body() { # 0107: a cut body from a server without ranges is not read again from byte 0
+    # a progressive file with reconnect_streamed (RMP's progressive options):
+    # one request, the read ends in an error at the cut, with no byte twice
+    # (stock http reads the file's start again, appended, without end)
+    run cut-prog-ref "" /prog/file.ts -q
+    run cut-prog "--cut 0" /prog/file.ts -q -maxtime 20 -o reconnect=1 -o reconnect_streamed=1 -o reconnect_on_network_error=1
+    req=$(grep -c 'GET /prog/file.ts' "$OUT/cut-prog.server.log")
+    full=$(field cut-prog-ref s0); got=$(field cut-prog s0)
+    grep -q '^end: Input/output error' "$OUT/cut-prog.log" && [ "$req" = 1 ] && [ -n "$full" ] &&
+        [ "${got:-0}" -gt 0 ] && [ "$got" -lt "$full" ]
+    result cut-prog "requested once ($req), ends in an I/O error, $got of $full video packets" $?
+    # an hls segment with RMP's options (0070 passes reconnect_streamed on to
+    # it): the segment once, then the rest of the playlist
+    run cut-hls-ref "" /vod/index.m3u8 -q
+    run cut-hls "--cut 5" /vod/index.m3u8 -q -maxtime 20 $RMPO
+    req=$(grep -c 'GET /vod/s5.ts' "$OUT/cut-hls.server.log")
+    after=$(grep -c 'GET /vod/s19.ts' "$OUT/cut-hls.server.log")
+    full=$(field cut-hls-ref s0); got=$(field cut-hls s0)
+    grep -q '^end: End of file' "$OUT/cut-hls.log" && [ "$req" = 1 ] && [ "$after" = 1 ] &&
+        [ -n "$full" ] && [ "${got:-0}" -lt "$full" ] && [ "$got" -gt $((full * 3 / 4)) ]
+    result cut-hls "the cut segment requested once ($req), read on to the end (s19: $after), $got of $full video packets" $?
+}
 
-CHECKS=${*:-b19 b20 id3 i51 i52 init_dedup headers_origin i54}
+CHECKS=${*:-b19 b20 id3 i51 i52 init_dedup headers_origin i54 cut_body}
 for c in $CHECKS; do "check_$(echo "$c" | tr - _)"; done
 exit $FAIL

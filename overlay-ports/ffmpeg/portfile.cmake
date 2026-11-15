@@ -78,6 +78,7 @@ vcpkg_from_github(
         0104-http-headers-only-to-their-origin.patch
         0105-crypto-interrupt-not-eof.patch
         0106-http-chunk-size-line-kept-across-interrupt.patch
+        0107-http-streamed-body-not-restarted.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

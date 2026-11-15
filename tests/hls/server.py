@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HLS fixture server for the pack's hls/http patches 0098-0106 (check.sh).
+"""HLS fixture server for the pack's hls/http patches 0098-0107 (check.sh).
 
 usage: server.py PORT [options]
   --stall SEQ:BYTES:MS      VOD/live segment SEQ (TS, fMP4, AES-128, ID3 audio): send
@@ -15,6 +15,9 @@ usage: server.py PORT [options]
   --long-tag LEN            /long/index.m3u8 has an EXT-X-DATERANGE line of LEN chars
                             (an X-ASSET-URI= this demuxer does not read)
   --ipv6                    listen on ::1, not 127.0.0.1
+  --cut SEQ                 VOD TS segment SEQ and /prog/file.ts: the whole
+                            Content-Length, half the body, then the connection
+                            closes (a proxy that lost its upstream)
 Paths:
   /vod/index.m3u8   VOD TS, 1 s segments s0..s19
   /vodfmp4/index.m3u8  the same in fMP4, with EXT-X-MAP init.mp4
@@ -25,6 +28,7 @@ Paths:
   /livefmp4/index.m3u8  live fMP4 with EXT-X-MAP init.mp4
   /vtt/subs.m3u8    VOD WebVTT segments ending in a newline, none or a blank line
   /long/index.m3u8  VOD TS with a long first segment URL
+  /prog/file.ts     a progressive TS file (s0..s4, 5 s), no Accept-Ranges
   /xo/index.m3u8    VOD TS on either port: s0 here, s2 by a redirect to the
                     other port, s1 on the other port (a new request on the
                     connection that redirect left open), s3 by a redirect to
@@ -62,6 +66,7 @@ if "--init-fail" in opt:
     INIT_FAIL = int(p[0])
     if len(p) > 1:
         INIT_CODE = int(p[1])
+CUT = int(opt["--cut"]) if "--cut" in opt else None
 LONG = int(opt.get("--long-line", "0"))
 LONG_TAG = int(opt.get("--long-tag", "0"))
 CHUNKED = "--chunked" in sys.argv
@@ -123,12 +128,17 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def send(self, code, body=b"", ctype="application/octet-stream", stall=None):
+    def send(self, code, body=b"", ctype="application/octet-stream", stall=None, cut=False):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        if stall and stall[0] == 0:
+        if cut:
+            self.wfile.write(body[:len(body) // 2])
+            self.wfile.flush()
+            self.close_connection = True
+            log("  cut after %d of %d bytes" % (len(body) // 2, len(body)))
+        elif stall and stall[0] == 0:
             # headers only, then the stall: the segment's first read waits
             self.wfile.flush()
             log("  stall %d ms before the body" % stall[1])
@@ -259,7 +269,10 @@ class H(BaseHTTPRequestHandler):
             body = open(os.path.join(D, "ts", "s%d.ts" % n), "rb").read()
             if CHUNKED and p.startswith("/vod/"):
                 return self.send_chunked(body, "video/mp2t", stall)
-            return self.send(200, body, "video/mp2t", stall)
+            return self.send(200, body, "video/mp2t", stall, cut=p.startswith("/vod/") and n == CUT)
+        if p == "/prog/file.ts":
+            body = b"".join(open(os.path.join(D, "ts", "s%d.ts" % n), "rb").read() for n in range(5))
+            return self.send(200, body, "video/mp2t", cut=CUT is not None)
         if p == "/live/index.m3u8" or p == "/livefmp4/index.m3u8":
             first, last = live_head()
             fmp4 = p.startswith("/livefmp4")
