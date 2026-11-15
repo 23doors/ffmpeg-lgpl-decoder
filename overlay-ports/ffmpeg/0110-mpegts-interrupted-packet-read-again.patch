@@ -12,33 +12,64 @@ interrupts the read while paused (to stop prefetching) met it on every
 long pause, depending on where the read stood.
 
 When a packet's read comes back short and the input's error is
-AVERROR_EXIT, seek back to the packet's start (within the I/O buffer,
-which still holds what was read) and return AVERROR_EXIT: the packet is
-read whole on the next call. On AVERROR_EXIT, mpegts_read_packet() keeps
-the PES data read so far and returns the error; the next call reads on.
-A stale AVERROR_EXIT in the error of an input that is not hls already
-ends avio_read(), so other callers see no change.
+AVERROR_EXIT, seek back to the packet's start and return AVERROR_EXIT:
+the packet is read whole on the next call. The seek is within the I/O
+buffer: read_packet() asks the buffer to keep a packet's length before it
+reads one (ffio_ensure_seekback(), which moves at most a packet's bytes,
+once per buffer), so a packet begun before a refill that brought only
+part of its rest is kept too; on a seekable input the seek may go to the
+input. Only a DVHS packet (192 bytes) read right after a resync can lose
+the 4 bytes before its sync byte that way, and with them the packet
+(logged at debug level); 192-byte TS does not occur in hls. On
+AVERROR_EXIT, mpegts_read_packet() keeps the PES data read so far and
+returns the error; the next call reads on. A stale AVERROR_EXIT in the
+error of an input that is not hls already ends avio_read() (hls clears
+it once data or the end comes, 0077 and 0112), so other callers see no
+change.
 
 diff --git a/libavformat/mpegts.c b/libavformat/mpegts.c
 --- a/libavformat/mpegts.c
 +++ b/libavformat/mpegts.c
-@@ -3190,6 +3190,15 @@ static int read_packet(AVFormatContext *s, uint8_t *buf, int raw_packet_size,
+@@ -3182,6 +3182,10 @@ static int read_packet(AVFormatContext *s, uint8_t *buf, int raw_packet_size,
+     AVIOContext *pb = s->pb;
+     int len;
+ 
++    /* The packet stays in the buffer until it is read whole, also when a
++     * refill is cut by an interrupt (see below). */
++    ffio_ensure_seekback(pb, raw_packet_size);
++
+     // 192 bytes source packet that start with a 4 bytes TP_extra_header
+     // followed by 188 bytes of TS packet. The sync byte is at offset 4, so skip
+     // the first 4 bytes otherwise we'll end up syncing to the wrong packet.
+@@ -3190,6 +3194,16 @@ static int read_packet(AVFormatContext *s, uint8_t *buf, int raw_packet_size,
  
      for (;;) {
          len = ffio_read_indirect(pb, buf, TS_PACKET_SIZE, data);
 +        if (len != TS_PACKET_SIZE && pb->error == AVERROR_EXIT) {
 +            /* The caller's interrupt callback cut the packet: back to its
 +             * start (the bytes are still in the buffer), so that it is read
-+             * whole on the next call. */
++             * whole on the next call. After a resync the 4 bytes before a
++             * DVHS packet's sync byte may be gone; that packet is lost. */
 +            int back = FFMAX(len, 0) + (raw_packet_size == TS_DVHS_PACKET_SIZE ? 4 : 0);
-+            if (back)
-+                avio_seek(pb, -back, SEEK_CUR);
++            if (back && avio_seek(pb, -back, SEEK_CUR) < 0)
++                av_log(s, AV_LOG_DEBUG, "Packet cut by an interrupt not kept\n");
 +            return AVERROR_EXIT;
 +        }
          if (len != TS_PACKET_SIZE)
              return len < 0 ? len : AVERROR_EOF;
          /* check packet sync byte */
-@@ -3506,6 +3515,12 @@ static int mpegts_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -3198,8 +3212,8 @@ static int read_packet(AVFormatContext *s, uint8_t *buf, int raw_packet_size,
+ 
+             if (mpegts_resync(s, raw_packet_size, *data) < 0)
+                 return AVERROR(EAGAIN);
+-            else
+-                continue;
++            ffio_ensure_seekback(pb, TS_PACKET_SIZE);
++            continue;
+         } else {
+             break;
+         }
+@@ -3506,6 +3520,12 @@ static int mpegts_read_packet(AVFormatContext *s, AVPacket *pkt)
      pkt->size = -1;
      ts->pkt = pkt;
      ret = handle_packets(ts, 0);
