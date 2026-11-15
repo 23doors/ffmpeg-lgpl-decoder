@@ -67,6 +67,9 @@ Paths:
                     GOP: video-only variants v1 (320x240) and v2 (480x360), and two
                     audio renditions a and a2 (the same media under two addresses)
   /mv/mux.m3u8      the same with muxed variants m1 and m2 (video and audio in one TS)
+  /mv2a/master.m3u8  two variants sharing one Media Playlist (setup.sh's media/mv2a:
+                    video and two audio streams in one TS) and an audio group of two
+                    in-stream renditions (no URI): en (DEFAULT=YES) and de
   /mv/disp.m3u8     v1 with one audio rendition (DEFAULT=YES), a81: a's segments, from
                     s3 on with the PMT's audio stream type 0x81 (AC-3): the codec
                     changes mid-stream, as at an ad break
@@ -535,6 +538,18 @@ class H(BaseHTTPRequestHandler):
                 if int(p[len("/mv/a81/s"):-3]) >= 3:
                     body = pmt_type(body, 0x0F, 0x81)
                 return self.send(200, body, "video/mp2t")
+        if p == "/mv2a/master.m3u8":
+            pl = ('#EXTM3U\n'
+                  '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="one",LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES\n'
+                  '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="two",LANGUAGE="de",DEFAULT=NO,AUTOSELECT=YES\n'
+                  '#EXT-X-STREAM-INF:BANDWIDTH=400000,RESOLUTION=320x240,AUDIO="aud"\nindex.m3u8\n'
+                  '#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=320x240,AUDIO="aud"\nindex.m3u8\n')
+            return self.send(200, pl.encode(), mpegurl)
+        if p.startswith("/mv2a/") and p[len("/mv2a/"):].replace(".", "").isalnum():
+            path = os.path.join(D, "mv2a", p[len("/mv2a/"):])
+            if os.path.isfile(path):
+                return self.send(200, open(path, "rb").read(),
+                                 mpegurl if p.endswith(".m3u8") else "video/mp2t")
         if p == "/mv/mux.m3u8":
             pl = ('#EXTM3U\n'
                   '#EXT-X-STREAM-INF:BANDWIDTH=400000,RESOLUTION=320x240\nm1/index.m3u8\n'

@@ -1,0 +1,30 @@
+hls: give each in-stream rendition its own stream
+
+add_metadata_from_renditions() pairs a Media Playlist's streams of a type
+with the playlist's renditions of that type (the in-stream ones, EXT-X-MEDIA
+without URI) in order, but its inner loop never stopped at a match: the
+first stream took the language, name and dispositions of every rendition
+(the last one's language and name), the others none. A TS with English
+(DEFAULT=YES) and German audio listed as two in-stream renditions showed
+its first audio as German, default, and its second without a language.
+In upstream since the renditions came (edf4406c4d, 2013), still in master.
+
+Stop at the first rendition of the type and go on with the next one for
+the next stream. A rendition listed again (two variants sharing a Media
+Playlist and its group add it twice; upstream's 2d0f83bb0b adds it once)
+then pairs with no stream, as there are none left.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index cb972e3..2f52ae0 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -2806,6 +2806,9 @@ static void add_metadata_from_renditions(AVFormatContext *s, struct playlist *pl
+                 av_dict_set(&st->metadata, "comment", rend->name, 0);
+ 
+             st->disposition |= rend->disposition;
++            /* the next rendition of this type is the next stream's */
++            rend_idx++;
++            break;
+         }
+         if (rend_idx >=pls->n_renditions)
+             break;

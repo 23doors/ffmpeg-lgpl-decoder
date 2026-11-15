@@ -153,4 +153,15 @@ if [ ! -f "$M/mv/a/index.m3u8" ]; then
     ffmpeg -nostdin -v error -f lavfi -i sine=f=440:sample_rate=48000 -t 35.9 -c:a aac -b:a 64k \
         -output_ts_offset 0.1 -f hls -hls_time 6 -hls_list_size 0 -hls_segment_filename "$M/mv/a/s%d.ts" "$M/mv/a/index.m3u8"
 fi
+if [ ! -f "$M/mv2a/index.m3u8" ]; then
+    # 12 s of video with two audio streams muxed in one TS (a 440 Hz and an
+    # 880 Hz tone), 6 s segments: one Media Playlist's two in-stream audio
+    # renditions
+    rm -rf "$M/mv2a"; mkdir -p "$M/mv2a"
+    ffmpeg -nostdin -v error -f lavfi -i testsrc=size=320x240:rate=25 \
+        -f lavfi -i sine=f=440:sample_rate=48000 -f lavfi -i sine=f=880:sample_rate=48000 -t 12 \
+        -map 0:v -map 1:a -map 2:a -c:v libx264 -g 150 -keyint_min 150 -sc_threshold 0 -b:v 300k \
+        -c:a aac -b:a 64k -f hls -hls_time 6 -hls_list_size 0 \
+        -hls_segment_filename "$M/mv2a/s%d.ts" "$M/mv2a/index.m3u8"
+fi
 echo "ready: $W/hlsread (patches up to $LAST)"

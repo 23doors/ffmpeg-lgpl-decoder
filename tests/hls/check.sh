@@ -714,15 +714,24 @@ near() {
     d=$(first "$1" "$2" | cut -d' ' -f2)
     awk -v d="$d" -v lo="$3" -v hi="$4" 'BEGIN { exit !(d != "" && d + 0 >= lo && d + 0 <= hi) }'
 }
-check_disp() { # 0151 (3ed7bc6580): a stream's rendition dispositions survive its update
+check_disp() { # 0151 (3ed7bc6580), 0152: rendition dispositions and metadata on their streams
     # the DEFAULT=YES audio rendition's codec changes in its fourth segment
     # (a new PMT: AC-3): hls copied the new stream's parameters and replaced
     # the dispositions from EXT-X-MEDIA with the subdemuxer's (none)
     run disp "" /mv/disp.m3u8 -q -maxtime 10
     at_open=$(grep '^disp 0 ' "$OUT/disp.log" | head -1)
     at_end=$(grep '^disp 0 ' "$OUT/disp.log" | tail -1)
-    [ "$at_open" = "disp 0 aac default" ] && [ "$at_end" = "disp 0 ac3 default" ]
+    [ "$at_open" = "disp 0 aac default lang=en" ] && [ "$at_end" = "disp 0 ac3 default lang=en" ]
     result disp "the audio rendition's DEFAULT kept after its codec changed ($at_open; $at_end)" $?
+    # 0152: a Media Playlist's two in-stream audio renditions (en DEFAULT=YES,
+    # de) are its two audio streams', in order (the first took both: de,
+    # default; the second none); two variants share the playlist and its
+    # group (listed twice): still one stream each
+    run disp-instream "" /mv2a/master.m3u8 -q -maxtime 10
+    got=$(grep '^disp ' "$OUT/disp-instream.log" | head -3 | tr '\n' ';')
+    [ "$got" = "disp 0 h264 none lang=-;disp 1 aac default lang=en;disp 2 aac none lang=de;" ] &&
+        grep -q '^opened at .*, 3 streams' "$OUT/disp-instream.log"
+    result disp-instream "in-stream renditions en (default), de on streams 1, 2 ($got)" $?
 }
 
 check_vswitch() { # 0113-0116: a video playlist needed anew starts at its segment's keyframe

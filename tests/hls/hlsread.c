@@ -35,7 +35,8 @@
  * of stream 0, the result. Counts and CRCs cover streams 0-15 only (the
  * fixtures have up to six). The streams are listed after the open:
  * "stream <n> <type> <width>x<height>", each followed by "disp <n> <codec>
- * <dispositions>" (comma-separated, "none"); the same disp lines again
+ * <dispositions> lang=<language>" (dispositions comma-separated or "none",
+ * the language "-" when none); the same disp lines again
  * before the summary (as the streams are at the end). */
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,6 +48,7 @@
 
 static void print_disp(const AVStream *st)
 {
+    const AVDictionaryEntry *lang;
     int any = 0;
     printf("disp %d %s ", st->index, avcodec_get_name(st->codecpar->codec_id));
     for (int b = 0; b < 32; b++) {
@@ -57,7 +59,9 @@ static void print_disp(const AVStream *st)
             any = 1;
         }
     }
-    printf("%s\n", any ? "" : "none");
+    printf("%s", any ? "" : "none");
+    lang = av_dict_get(st->metadata, "language", NULL, 0);
+    printf(" lang=%s\n", lang ? lang->value : "-");
 }
 
 static int64_t t0, last_pkt, int_until;
