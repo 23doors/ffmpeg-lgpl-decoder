@@ -1,0 +1,27 @@
+hls: a playlist load that fails half way drops its kept-alive connection
+
+With http_persistent (the default) a playlist reload reuses the
+connection the last load read its answer on. A load that failed before
+the end of the answer (a garbled line, which 0102 plays through on a
+live reload) left the rest of that answer unread on the connection, and
+the next reload read it first: no "#EXTM3U" line, so that reload failed
+too, and so on, a line of the old answer at a time (in the fixture, three
+garbled answers made 13 failed reloads).
+
+Close the kept-alive connection when a load fails; the next load opens a
+new one.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -1510,6 +1510,10 @@ fail:
+     av_free(new_url);
+     if (close_in)
+         ff_format_io_close(c->ctx, &in);
++    else if (ret < 0 && in && in == *playlist_pb)
++        /* a load that failed half way left the rest of the answer on the
++         * kept-alive connection, which the next load would read first */
++        ff_format_io_close(c->ctx, playlist_pb);
+     c->ctx->ctx_flags = c->ctx->ctx_flags & ~(unsigned)AVFMTCTX_UNSEEKABLE;
+     if (!c->n_variants || !c->variants[0]->n_playlists ||
+         !c->variants[0]->playlists[0]->n_segments)
