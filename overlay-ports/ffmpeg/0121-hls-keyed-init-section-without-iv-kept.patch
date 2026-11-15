@@ -10,6 +10,10 @@ demuxer again on every reload ("Found duplicated MOOV Atom"), as before
 
 Remember whether the IV was given, and compare IVs only when both were:
 a derived IV of the same address, range and key is the same section.
+Such a playlist breaks RFC 8216 4.3.2.5, which requires the IV of an
+encrypted EXT-X-MAP, and other players derive another IV or none (hls.js
+uses 0, ExoPlayer rejects the playlist): log it once per playlist, so a
+section that does not decrypt has a hint.
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
 --- a/libavformat/hls.c
@@ -24,7 +28,15 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
      uint64_t discontinuity_seq;
      /* associated Media Initialization Section, treated as a segment */
      struct segment *init_section;
-@@ -652,7 +655,9 @@ static void drop_last_init_section(struct playlist *pls)
+@@ -191,6 +194,7 @@ struct playlist {
+     /* ID3 timestamp handling (elementary audio streams have ID3 timestamps
+      * (and possibly other ID3 tags) in the beginning of each segment) */
+     int is_id3_timestamped; /* -1: not yet known */
++    int map_iv_warned; /* an encrypted EXT-X-MAP without an IV was logged */
+     int64_t id3_mpegts_timestamp; /* in mpegts tb */
+     int64_t id3_offset; /* in stream original tb */
+     uint8_t* id3_buf; /* temp buffer for id3 parsing */
+@@ -652,7 +656,9 @@ static void drop_last_init_section(struct playlist *pls)
   * just added (the last one) that is the same as one listed before is that
   * one: it is not downloaded and given to the demuxer again, and the list does
   * not grow with each reload. A section of other bytes (another address or
@@ -35,7 +47,7 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
  static struct segment *dedup_init_section(struct playlist *pls,
                                            struct segment *sec)
  {
-@@ -661,8 +666,8 @@ static struct segment *dedup_init_section(struct playlist *pls,
+@@ -661,8 +667,8 @@ static struct segment *dedup_init_section(struct playlist *pls,
          if (old->size == sec->size && old->url_offset == sec->url_offset &&
              old->key_type == sec->key_type && !strcmp(old->url, sec->url) &&
              (sec->key_type == KEY_NONE ||
@@ -46,11 +58,18 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
              drop_last_init_section(pls);
              return old;
          }
-@@ -1280,6 +1285,7 @@ static int parse_playlist(HLSContext *c, const char *url,
+@@ -1280,6 +1286,14 @@ static int parse_playlist(HLSContext *c, const char *url,
              if (ret < 0)
                  goto fail;
              cur_init_section->key_type = key_type;
 +            cur_init_section->iv_given = has_iv;
++            if (key_type != KEY_NONE && !has_iv && !pls->map_iv_warned) {
++                av_log(c->ctx, AV_LOG_WARNING,
++                       "Playlist %d: an encrypted EXT-X-MAP without an IV (RFC 8216 "
++                       "4.3.2.5 requires one): its IV is the media sequence number "
++                       "of the load that first lists it\n", pls->index);
++                pls->map_iv_warned = 1;
++            }
              if (has_iv) {
                  memcpy(cur_init_section->iv, iv, sizeof(iv));
              } else {
