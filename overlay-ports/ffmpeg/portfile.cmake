@@ -87,7 +87,7 @@ vcpkg_from_github(
         0113-hls-new-video-playlist-from-segment-keyframe.patch
         0114-hls-playlist-needed-again-read-afresh.patch
         0115-hls-buffered-init-section-served-again.patch
-        0116-hls-cutoff-drops-rest-of-dropped-pes.patch
+        0116-hls-cutoff-drops-untimed-after-dropped.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

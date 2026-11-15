@@ -1,18 +1,20 @@
-hls: the cutoff drops the rest of a PES it dropped the start of
+hls: the cutoff drops a stream's packets without a dts after one it dropped
 
 The cutoff after a seek or a catch-up (seek_timestamp) drops packets
 before the position and ends at the first one past it, or at the first
-without a dts. In MPEG-TS the parser splits a PES into frames of which
-only the first carries the PES timestamps: the AAC frames after the first
-of a PES have no dts. So the first audio PES before the position ended
-the cutoff at its second frame, and everything after it came, from
-before the position: an AVSEEK_FLAG_ANY catch-up (a live variant switch,
-a muxed variant's audio) started up to half a second early, its video on
-P-frames before the position.
+without a dts. Packets without a dts come out of a TS subdemuxer within
+a cutoff: in the fixture's live variant switch (tests/hls live-switch) a
+debug run printed 15 of them, all the new variant's audio (its stream
+1), 169-194 bytes each (AAC frames), with neither pts nor dts, each
+after a timestamped packet of that stream the cutoff had dropped. The
+first ended the cutoff, and everything after it came, from before the
+position: the AVSEEK_FLAG_ANY catch-up started early, the video on
+P-frames at 11.68 s for a position of 11.92 s (12.68 s for 13.12 s in
+another run).
 
 Remember the streams whose timestamped packet the cutoff dropped, and
-drop their following packets without a dts too. A stream that never has
-a dts still ends the cutoff, as before.
+drop their following packets without a dts too. A stream whose first
+packet in the cutoff has no dts still ends it, as before.
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
 --- a/libavformat/hls.c
@@ -27,7 +29,7 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
  
      /* Renditions associated with this playlist, if any.
       * Alternative rendition playlists have a single rendition associated
-@@ -3522,6 +3525,7 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
+@@ -3525,6 +3528,7 @@ static int recheck_discard_flags(AVFormatContext *s, int first)
              pls->pb.pub.eof_reached = 0;
              pls->pb.pub.error = 0;
              pls->catchup_ts = AV_NOPTS_VALUE;
@@ -35,7 +37,7 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
              if (c->cur_timestamp != AV_NOPTS_VALUE) {
                  /* A VOD playlist that brings a video stream (another
                   * variant, after a seek or during playback) starts it at its
-@@ -3832,6 +3836,17 @@ retry:
+@@ -3835,6 +3839,17 @@ retry:
                      pls->seek_stream_index == pls->pkt->stream_index) {
  
                      if (pls->pkt->dts == AV_NOPTS_VALUE) {
@@ -53,7 +55,7 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
                          pls->seek_timestamp = AV_NOPTS_VALUE;
                          break;
                      }
-@@ -3859,6 +3874,8 @@ retry:
+@@ -3862,6 +3877,8 @@ retry:
                                           AV_TIME_BASE_Q, AV_ROUND_DOWN) >
                          pls->seek_timestamp)
                          break;
@@ -62,7 +64,7 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
                  }
                  av_packet_unref(pls->pkt);
              }
-@@ -4181,6 +4198,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -4184,6 +4201,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
          restart_init_section(pls);
          pls->segment_boundary = 0;
          pls->catchup_ts = AV_NOPTS_VALUE;
