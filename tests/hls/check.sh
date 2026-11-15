@@ -231,14 +231,14 @@ check_bad_map() { # 0117, 0118: a garbled EXT-X-MAP on a live reload is played t
     # load: it fails as AVERROR_EXIT, not INVALIDDATA from the empty first
     # line, and does not stamp last_load_time, so the playlist is asked for
     # again at once (before, a reload interval after the stalled request:
-    # 1 s or more; with the fix about 0.35 s, the interrupt 1.2 s after the
-    # last packet)
-    run stall-reload "--stall-reload 4:4000" /live/index.m3u8 -q -nofsi -maxtime 12 -stallint 1200
+    # 1 s or more; with the fix about 0.5 s, the interrupt 1.4 s after the
+    # last packet: well after the stalled request goes out)
+    run stall-reload "--stall-reload 4:4000" /live/index.m3u8 -q -nofsi -maxtime 12 -stallint 1400
     gap=$(awk '/stall [0-9]+ ms before the body/ { s = t } /GET \/live\/index.m3u8/ { if (s != "" && g == "") g = $1 - s; t = $1 } END { print g }' "$OUT/stall-reload.server.log")
     played=$(field stall-reload s0)
     grep -q '^interrupt at' "$OUT/stall-reload.log" && ! grep -q 'Failed to reload playlist' "$OUT/stall-reload.log" &&
         grep -q '^maxtime' "$OUT/stall-reload.log" && [ "${played:-0}" -gt 200 ] &&
-        awk -v g="$gap" 'BEGIN { exit !(g != "" && g + 0 < 0.7) }'
+        awk -v g="$gap" 'BEGIN { exit !(g != "" && g + 0 < 0.9) }'
     result stall-reload "a reload stalled and interrupted: no failure logged, asked for again ${gap:-never} s after the stalled request, played on (s0=${played:-none})" $?
 }
 check_vod_init() { # 0119: a finished playlist's init section failure is its segment's
