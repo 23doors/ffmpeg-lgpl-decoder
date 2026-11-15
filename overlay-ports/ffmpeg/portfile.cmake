@@ -75,6 +75,7 @@ vcpkg_from_github(
         0101-hls-live-init-section-failure-fails-its-segment.patch
         0102-hls-local-errors-not-played-through.patch
         0103-hls-unchanged-init-section-kept.patch
+        0104-http-headers-only-to-their-origin.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

@@ -5,6 +5,7 @@ usage: server.py PORT [options]
   --stall SEQ:BYTES:MS      VOD/live TS segment SEQ: send BYTES, sleep MS, send the rest
   --live-404 SEQ[,SEQ]      live: these segments answer 404
   --init-fail N[:CODE]      live fMP4: the first N init section requests answer CODE (503)
+  --second-port PORT2       also listen on PORT2: a second origin for /xo/
   --long-line LEN           /long/index.m3u8 names its first segment by an absolute
                             address of LEN chars; a cut one answers 400
 Paths:
@@ -13,6 +14,12 @@ Paths:
   /livefmp4/index.m3u8  live fMP4 with EXT-X-MAP init.mp4
   /vtt/subs.m3u8    VOD WebVTT segments ending in a newline, none or a blank line
   /long/index.m3u8  VOD TS with a long first segment URL
+  /xo/index.m3u8    VOD TS on either port: s0 here, s2 by a redirect to the
+                    other port, s1 on the other port (a new request on the
+                    connection that redirect left open), s3 by a redirect to
+                    the other port that redirects back here, s4 here
+Every request's log line says whether it carried "X-Token" (token=yes/no),
+on which port it came and on which connection (the client's port).
 Every request is logged with its time since start (seconds) to stdout.
 """
 import sys, time, os, threading
@@ -42,6 +49,7 @@ if "--init-fail" in opt:
     if len(p) > 1:
         INIT_CODE = int(p[1])
 LONG = int(opt.get("--long-line", "0"))
+PORTS = [int(sys.argv[1])] + ([int(opt["--second-port"])] if "--second-port" in opt else [])
 init_requests = 0
 lock = threading.Lock()
 WINDOW = 6
@@ -92,9 +100,18 @@ class H(BaseHTTPRequestHandler):
         else:
             self.wfile.write(body)
 
+    def redirect(self, url):
+        self.send_response(302)
+        self.send_header("Location", url)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self):
         p = self.path.split("?")[0]
-        log("GET %s" % (p if len(p) < 200 else p[:60] + "...(%d)" % len(p)))
+        port = self.server.server_address[1]
+        log("GET %s port=%d token=%s conn=%d" % (p if len(p) < 200 else p[:60] + "...(%d)" % len(p),
+                                                 port, "yes" if self.headers.get("X-Token") else "no",
+                                                 self.client_address[1]))
         try:
             self.route(p)
         except (BrokenPipeError, ConnectionResetError):
@@ -108,6 +125,24 @@ class H(BaseHTTPRequestHandler):
                 pl += "#EXTINF:1.000000,\ns%d.ts\n" % n
             pl += "#EXT-X-ENDLIST\n"
             return self.send(200, pl.encode(), "application/vnd.apple.mpegurl")
+        if p.startswith("/xo/"):
+            me = self.server.server_address[1]
+            other = [x for x in PORTS if x != me][0] if len(PORTS) > 1 else me
+            o = "http://127.0.0.1:%d/xo/" % other
+            if p == "/xo/index.m3u8":
+                pl = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-MEDIA-SEQUENCE:0\n"
+                for u in ["s0.ts", "r2.ts", o + "s1.ts", "rb3.ts", "s4.ts"]:
+                    pl += "#EXTINF:1.000000,\n%s\n" % u
+                pl += "#EXT-X-ENDLIST\n"
+                return self.send(200, pl.encode(), "application/vnd.apple.mpegurl")
+            if p == "/xo/r2.ts":
+                return self.redirect(o + "s2.ts")
+            if p == "/xo/rb3.ts":
+                return self.redirect(o + "back3.ts")
+            if p == "/xo/back3.ts":
+                return self.redirect(o + "s3.ts")
+            n = int(p[len("/xo/s"):].split(".")[0])
+            return self.send(200, open(os.path.join(D, "ts", "s%d.ts" % n), "rb").read(), "video/mp2t")
         if p == "/long/index.m3u8":
             pl = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-MEDIA-SEQUENCE:0\n"
             # an absolute address, like a signed CDN URL: a relative one cut
@@ -165,6 +200,8 @@ class H(BaseHTTPRequestHandler):
 
 
 ThreadingHTTPServer.daemon_threads = True
-srv = ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), H)
+servers = [ThreadingHTTPServer(("127.0.0.1", port), H) for port in PORTS]
+for extra in servers[1:]:
+    threading.Thread(target=extra.serve_forever, daemon=True).start()
 log("listening")
-srv.serve_forever()
+servers[0].serve_forever()

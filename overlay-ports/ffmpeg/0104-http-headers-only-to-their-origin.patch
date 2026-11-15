@@ -1,0 +1,250 @@
+http: send the custom headers only to their origin
+
+The headers option carries what a caller adds to its requests, and a
+player's are often secret: a media server's token (X-Plex-Token,
+X-Emby-Token, Authorization) or a Cookie line. http sent them with every
+request of the context, also after a redirect to another host, and the
+hls demuxer copies them (ffio_copy_url_options) to every playlist,
+segment and key request it opens, whatever the host: a token for the
+media server reached the CDN its segments are on, an ad server's
+segments stitched into a live playlist, and whatever a redirect named.
+Browsers, curl and ExoPlayer send such headers to the origin they were
+given for only.
+
+Add the option headers_origin, scheme://host[:port]. The custom headers
+go with a request only when its URL has that origin (scheme, host and
+port, the scheme's default port when none is given), checked on every
+request: the first, each redirect hop (a hop back to the origin gets
+them again), a reconnect, and a new request on a kept-alive connection.
+Without the option the origin is that of the URL opened (before any
+redirect), worked out at the open and, for headers that came later (a new
+request on a kept-alive connection may bring them), when the request is
+sent; a redirect to another origin drops them. It fails closed: when no
+origin can be read (an unreadable headers_origin or URL), the custom
+headers go with no request, and a warning says so once per connection. ffio_copy_url_options() passes the option
+on with the headers, so the connections hls (and dash) open send the
+headers only to the origin of the URL the input was opened with, or to
+the one the caller named: a player that opens an external track with
+the media's options names the media's origin, and the track's own host
+gets none. Without custom headers nothing changes.
+
+user_agent and referer are not secret and are sent as before. cookies
+are left as they are: a cookie is scoped by its own Domain attribute, a
+cookie without one goes to every host as before (cookies set by a CDN's
+answers need that); a secret cookie should come as a Cookie line in
+headers, which is scoped now.
+
+diff --git a/doc/protocols.texi b/doc/protocols.texi
+--- a/doc/protocols.texi
++++ b/doc/protocols.texi
+@@ -440,6 +440,13 @@ set HTTP proxy to tunnel through e.g. http://example.com:1234
+ Set custom HTTP headers, can override built in default headers. The
+ value must be a string encoding the headers.
+ 
++@item headers_origin
++The origin (@samp{scheme://host[:port]}) the custom headers are sent to.
++A request to any other origin, a redirect's included, goes without them.
++Default: the origin of the URL opened. The hls demuxer passes it on with
++the headers to the connections it opens, so a playlist's segments on
++another host get no headers either.
++
+ @item content_type
+ Set a specific content type for the POST messages or for listen mode.
+ 
+diff --git a/libavformat/aviobuf.c b/libavformat/aviobuf.c
+--- a/libavformat/aviobuf.c
++++ b/libavformat/aviobuf.c
+@@ -994,7 +994,7 @@ void ffio_write_lines(AVIOContext *s, const unsigned char *buf, int size,
+ int ffio_copy_url_options(AVIOContext* pb, AVDictionary** avio_opts)
+ {
+     const char *opts[] = {
+-        "headers", "user_agent", "cookies", "http_proxy", "referer", "rw_timeout", "icy", NULL };
++        "headers", "headers_origin", "user_agent", "cookies", "http_proxy", "referer", "rw_timeout", "icy", NULL };
+     const char **opt = opts;
+     uint8_t *buf = NULL;
+     int ret = 0;
+diff --git a/libavformat/http.c b/libavformat/http.c
+--- a/libavformat/http.c
++++ b/libavformat/http.c
+@@ -85,6 +85,9 @@ typedef struct HTTPContext {
+     HTTPAuthState proxy_auth_state;
+     char *http_proxy;
+     char *headers;
++    /* The origin (scheme://host:port) the custom headers are sent to. */
++    char *headers_origin;
++    int headers_origin_unknown_logged;
+     char *mime_type;
+     char *http_version;
+     char *user_agent;
+@@ -170,6 +173,7 @@ static const AVOption options[] = {
+     { "chunked_post", "use chunked transfer-encoding for posts", OFFSET(chunked_post), AV_OPT_TYPE_BOOL, { .i64 = 1 }, 0, 1, E },
+     { "http_proxy", "set HTTP proxy to tunnel through", OFFSET(http_proxy), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, D | E },
+     { "headers", "set custom HTTP headers, can override built in default headers", OFFSET(headers), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, D | E },
++    { "headers_origin", "the only origin (scheme://host[:port]) the custom headers are sent to; default: the opened URL's", OFFSET(headers_origin), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, D | E },
+     { "content_type", "set a specific content type for the POST messages", OFFSET(content_type), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, D | E },
+     { "user_agent", "override User-Agent header", OFFSET(user_agent), AV_OPT_TYPE_STRING, { .str = DEFAULT_USER_AGENT }, 0, 0, D },
+     { "referer", "override referer header", OFFSET(referer), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, D },
+@@ -209,6 +213,56 @@ static const AVOption options[] = {
+     { NULL }
+ };
+ 
++/* A URL's origin (RFC 6454): scheme, host and port, lower case, with the
++ * scheme's default port when none is given. */
++static int url_origin(char *buf, int size, const char *url)
++{
++    char proto[16], host[1024];
++    int port = -1;
++
++    av_url_split(proto, sizeof(proto), NULL, 0, host, sizeof(host), &port,
++                 NULL, 0, url);
++    if (!proto[0] || !host[0])
++        return AVERROR(EINVAL);
++    if (port < 0)
++        port = !av_strcasecmp(proto, "https") ? 443 : 80;
++    for (char *c = proto; *c; c++)
++        *c = av_tolower(*c);
++    for (char *c = host; *c; c++)
++        *c = av_tolower(*c);
++    snprintf(buf, size, "%s://%s:%d", proto, host, port);
++    return 0;
++}
++
++/* The custom headers' origin, unless the caller named one: that of the URL
++ * the request was made for, before any redirect (s->uri; a new request on a
++ * kept-alive connection sets it to its own URL). */
++static int set_default_headers_origin(HTTPContext *s)
++{
++    char origin[1100];
++
++    if (s->headers_origin || !s->uri ||
++        url_origin(origin, sizeof(origin), s->uri) < 0)
++        return 0;
++    s->headers_origin = av_strdup(origin);
++    return s->headers_origin ? 0 : AVERROR(ENOMEM);
++}
++
++/* Whether the custom headers go with a request for url: only to their
++ * origin, so that a token or cookie they carry reaches no other server (a
++ * CDN, an ad server) through a redirect or a playlist's address. Without a
++ * known origin they go nowhere. */
++static int headers_go_to(const HTTPContext *s, const char *url)
++{
++    char want[1100], have[1100];
++
++    if (!s->headers_origin ||
++        url_origin(want, sizeof(want), s->headers_origin) < 0 ||
++        url_origin(have, sizeof(have), url) < 0)
++        return 0;
++    return !strcmp(want, have);
++}
++
+ static int http_connect(URLContext *h, const char *path, const char *local_path,
+                         const char *hoststr, const char *auth,
+                         const char *proxyauth);
+@@ -789,6 +843,12 @@ static int http_open(URLContext *h, const char *uri, int flags,
+     if (!s->uri)
+         return AVERROR(ENOMEM);
+ 
++    /* Unless the caller named it, the custom headers' origin is that of the
++     * URL opened, not of where a redirect leads; set here so that it is
++     * exported to the connections a demuxer opens with these options. */
++    if (s->headers && (ret = set_default_headers_origin(s)) < 0)
++        return ret;
++
+     if (options)
+         av_dict_copy(&s->chained_options, *options, 0);
+ 
+@@ -1538,9 +1598,27 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
+     uint64_t off = s->off;
+     const char *method;
+     int send_expect_100 = 0;
++    const char *headers = NULL;
++    char origin[1100];
+ 
+     av_bprint_init_for_buffer(&request, s->buffer, sizeof(s->buffer));
+ 
++    /* Headers that came after the open (a new request on a kept-alive
++     * connection may bring them) get their origin here. */
++    if (s->headers && (err = set_default_headers_origin(s)) < 0)
++        return err;
++    if (s->headers && headers_go_to(s, s->location))
++        headers = s->headers;
++    else if (s->headers && s->headers_origin &&
++             url_origin(origin, sizeof(origin), s->headers_origin) >= 0)
++        av_log(h, AV_LOG_VERBOSE, "Custom headers not sent to another origin than %s\n",
++               s->headers_origin);
++    else if (s->headers && !s->headers_origin_unknown_logged) {
++        av_log(h, AV_LOG_WARNING, "Custom headers not sent: no origin for them "
++               "(headers_origin or the URL could not be read)\n");
++        s->headers_origin_unknown_logged = 1;
++    }
++
+     /* send http header */
+     post = h->flags & AVIO_FLAG_WRITE;
+ 
+@@ -1584,19 +1662,19 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
+     if (post && s->chunked_post)
+         av_bprintf(&request, "Transfer-Encoding: chunked\r\n");
+     /* set default headers if needed */
+-    if (!has_header(s->headers, "\r\nUser-Agent: "))
++    if (!has_header(headers, "\r\nUser-Agent: "))
+         av_bprintf(&request, "User-Agent: %s\r\n", s->user_agent);
+     if (s->referer) {
+         /* set default headers if needed */
+-        if (!has_header(s->headers, "\r\nReferer: "))
++        if (!has_header(headers, "\r\nReferer: "))
+             av_bprintf(&request, "Referer: %s\r\n", s->referer);
+     }
+-    if (!has_header(s->headers, "\r\nAccept: "))
++    if (!has_header(headers, "\r\nAccept: "))
+         av_bprintf(&request, "Accept: */*\r\n");
+     // Note: we send the Range header on purpose, even when we're probing,
+     // since it allows us to detect more reliably if a (non-conforming)
+     // server supports seeking by analysing the reply headers.
+-    if (!has_header(s->headers, "\r\nRange: ") && !post && (s->off > 0 || s->end_off || s->seekable != 0)) {
++    if (!has_header(headers, "\r\nRange: ") && !post && (s->off > 0 || s->end_off || s->seekable != 0)) {
+         av_bprintf(&request, "Range: bytes=%"PRIu64"-", s->off);
+         if ((s->initial_requests || s->request_size) && s->seekable != 0) {
+             uint64_t req_size = s->initial_requests ? s->initial_request_size : s->request_size;
+@@ -1611,32 +1689,32 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
+             av_bprintf(&request, "%"PRId64, s->end_off - 1);
+         av_bprintf(&request, "\r\n");
+     }
+-    if (send_expect_100 && !has_header(s->headers, "\r\nExpect: "))
++    if (send_expect_100 && !has_header(headers, "\r\nExpect: "))
+         av_bprintf(&request, "Expect: 100-continue\r\n");
+ 
+-    if (!has_header(s->headers, "\r\nConnection: "))
++    if (!has_header(headers, "\r\nConnection: "))
+         av_bprintf(&request, "Connection: %s\r\n", s->multiple_requests ? "keep-alive" : "close");
+ 
+-    if (!has_header(s->headers, "\r\nHost: "))
++    if (!has_header(headers, "\r\nHost: "))
+         av_bprintf(&request, "Host: %s\r\n", hoststr);
+-    if (!has_header(s->headers, "\r\nContent-Length: ") && s->post_data)
++    if (!has_header(headers, "\r\nContent-Length: ") && s->post_data)
+         av_bprintf(&request, "Content-Length: %d\r\n", s->post_datalen);
+ 
+-    if (!has_header(s->headers, "\r\nContent-Type: ") && s->content_type)
++    if (!has_header(headers, "\r\nContent-Type: ") && s->content_type)
+         av_bprintf(&request, "Content-Type: %s\r\n", s->content_type);
+-    if (!has_header(s->headers, "\r\nCookie: ") && s->cookies) {
++    if (!has_header(headers, "\r\nCookie: ") && s->cookies) {
+         char *cookies = NULL;
+         if (!get_cookies(s, &cookies, path, hoststr) && cookies) {
+             av_bprintf(&request, "Cookie: %s\r\n", cookies);
+             av_free(cookies);
+         }
+     }
+-    if (!has_header(s->headers, "\r\nIcy-MetaData: ") && s->icy)
++    if (!has_header(headers, "\r\nIcy-MetaData: ") && s->icy)
+         av_bprintf(&request, "Icy-MetaData: 1\r\n");
+ 
+     /* now add in custom headers */
+-    if (s->headers)
+-        av_bprintf(&request, "%s", s->headers);
++    if (headers)
++        av_bprintf(&request, "%s", headers);
+ 
+     if (authstr)
+         av_bprintf(&request, "%s", authstr);

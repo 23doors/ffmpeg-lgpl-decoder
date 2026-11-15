@@ -1,11 +1,12 @@
 #!/bin/sh
-# The fixture checks of patches 0098-0103 (and the I54 trace) against a
+# The fixture checks of patches 0098-0104 (and the I54 trace) against a
 # harness built by setup.sh. Each check prints PASS or FAIL; the exit status
 # is the number of failures. With the series only up to 0097
-# (setup.sh WORKDIR 0097) b19, b20, i51, i52 and init-dedup fail.
+# (setup.sh WORKDIR 0097) b19, b20, i51, i52, init-dedup and headers-origin
+# fail.
 #
 # usage: tests/hls/check.sh WORKDIR [CHECK...]
-#   checks: b19 b20 i51 i52 init-dedup i54 (default: all)
+#   checks: b19 b20 i51 i52 init-dedup headers-origin i54 (default: all)
 set -u
 W=$(cd "$1" && pwd); shift
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -72,6 +73,55 @@ check_init_dedup() { # 0103: a live playlist's unchanged init section is read on
     req=$(grep -c 'GET /livefmp4/init.mp4' "$OUT/dedup.server.log")
     [ "$req" = 1 ]; result init-dedup "the init section requested once in 5 s of reloads ($req)" $?
 }
+run2() { # 0104's fixture
+    # run2 NAME A|B [ORIGIN]: the server on two ports (two origins A and B),
+    # the input opened on A or B; with ORIGIN: headers_origin=ORIGIN (A: A's)
+    name=$1; which=$2; named=${3:-}
+    PORT=$((PORT + 2)); a=$((PORT - 1)); b=$PORT
+    python3 -I "$HERE/server.py" $a --second-port $b > "$OUT/$name.server.log" 2>&1 &
+    srv=$!
+    i=0
+    until grep -q listening "$OUT/$name.server.log" 2>/dev/null || [ $i -ge 50 ]; do
+        sleep 0.1; i=$((i + 1))
+    done
+    if [ "$which" = A ]; then port=$a; else port=$b; fi
+    [ "$named" = A ] && named=http://127.0.0.1:$a
+    if [ -n "$named" ]; then
+        timeout 60 "$W/hlsread" "http://127.0.0.1:$port/xo/index.m3u8" -q -o http_multiple=0 -o "headers=X-Token: secret" \
+            -o "headers_origin=$named" > "$OUT/$name.log" 2>&1
+    else
+        timeout 60 "$W/hlsread" "http://127.0.0.1:$port/xo/index.m3u8" -q -o http_multiple=0 -o "headers=X-Token: secret" > "$OUT/$name.log" 2>&1
+    fi
+    kill $srv 2>/dev/null; wait $srv 2>/dev/null
+    A_PORT=$a
+}
+origin_result() { # NAME: every request on A carried the token, none on B, all 5 segments read
+    log="$OUT/$1.server.log"
+    a_no=$(grep 'GET /xo/' "$log" | grep "port=$A_PORT " | grep -c 'token=no')
+    b_yes=$(grep 'GET /xo/' "$log" | grep -v "port=$A_PORT " | grep -c 'token=yes')
+    segs=$(grep -c 'GET /xo/s[0-9]' "$log")
+    # s1 is asked for on the connection the redirect to s2 left open (a new
+    # request on a kept-alive connection)
+    c2=$(sed -n 's|.*GET /xo/s2.ts .* conn=\([0-9]*\).*|\1|p' "$log")
+    c1=$(sed -n 's|.*GET /xo/s1.ts .* conn=\([0-9]*\).*|\1|p' "$log")
+    [ "$a_no" = 0 ] && [ "$b_yes" = 0 ] && [ "$segs" = 5 ] && [ -n "$c1" ] && [ "$c1" = "$c2" ]
+    result "$1" "the token at origin A's requests only ($a_no without it on A, $b_yes with it on B, $segs segments; s1 on s2's connection: $c1/$c2)" $?
+}
+check_headers_origin() {
+    # opened on A: the playlist, its segments on A and a redirect back to A
+    # get the token; redirects to B and a new request on the connection to B
+    # a redirect left open do not
+    run2 xo-opened-a A; origin_result xo-opened-a
+    # opened on B with headers_origin=A (an external track opened with the
+    # media's options): nothing to B, the token only where A is asked
+    run2 xo-origin-a B A; origin_result xo-origin-a
+    # an origin that cannot be read: the headers go nowhere (fail closed)
+    run2 xo-origin-bad A "not an origin"
+    sent=$(grep 'GET /xo/' "$OUT/xo-origin-bad.server.log" | grep -c 'token=yes')
+    segs=$(grep -c 'GET /xo/s[0-9]' "$OUT/xo-origin-bad.server.log")
+    [ "$sent" = 0 ] && [ "$segs" = 5 ] && grep -q 'Custom headers not sent: no origin' "$OUT/xo-origin-bad.log"
+    result xo-origin-bad "an unreadable headers_origin sends the token nowhere ($sent requests with it, $segs segments)" $?
+}
 check_i54() { # trace: two 404s in a row, RMP's options, a player 2-3 s behind the edge
     for lsi in -2 -3; do
         run i54_$lsi "--live-404 12,13" /live/index.m3u8 -q -maxtime 16 -nofsi -pace 10 -start 0.5 -o live_start_index=$lsi $RMPO
@@ -83,6 +133,6 @@ check_i54() { # trace: two 404s in a row, RMP's options, a player 2-3 s behind t
     done
 }
 
-CHECKS=${*:-b19 b20 i51 i52 init_dedup i54}
+CHECKS=${*:-b19 b20 i51 i52 init_dedup headers_origin i54}
 for c in $CHECKS; do "check_$(echo "$c" | tr - _)"; done
 exit $FAIL
