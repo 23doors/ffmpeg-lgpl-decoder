@@ -18,6 +18,9 @@ segments leaked). When the reads of a playlist end with an error,
 hls_read_packet() returns that error instead of an end of stream; a subtitle
 playlist, which skips its failed segments itself, still only ends its track.
 
+0102 states the rule the live tolerance of 0071-0101 follows, and makes an
+error of the reader itself (ENOMEM, AVERROR_BUG) final at once.
+
 diff --git a/libavformat/hls.c b/libavformat/hls.c
 index b85d061..46e8ac5 100644
 --- a/libavformat/hls.c

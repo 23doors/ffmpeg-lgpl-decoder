@@ -11,6 +11,10 @@ live_reload_timeout (from the start of the first request that failed since a
 segment last opened, as for reloads) returns the error as its reloads would:
 skipping on would read nothing, without end.
 
+A seek starts the count afresh (0078: also a re-enable of the playlist, and
+the reloads' count too). 0102 states the rule for reloads and segments
+together.
+
 diff --git a/libavformat/hls.c b/libavformat/hls.c
 index 46e8ac5..26700b3 100644
 --- a/libavformat/hls.c

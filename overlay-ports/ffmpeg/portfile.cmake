@@ -73,6 +73,7 @@ vcpkg_from_github(
         0099-hls-interrupted-segment-body-read-on.patch
         0100-hls-cut-playlist-line-fails.patch
         0101-hls-live-init-section-failure-fails-its-segment.patch
+        0102-hls-local-errors-not-played-through.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

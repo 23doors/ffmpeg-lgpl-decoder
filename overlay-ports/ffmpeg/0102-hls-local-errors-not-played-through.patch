@@ -1,0 +1,109 @@
+hls: one rule for which live failures are played through
+
+The live tolerance of 0071 (reloads), 0072 (segments), 0078 (subtitle
+segments) and 0101 (initialization sections) follows one rule:
+
+- A failure is played through for live_reload_timeout when it may pass:
+  a network error, a timeout, a server error (5xx), 429, an empty or cut
+  answer (EOF) or a garbled one (INVALIDDATA). A failed segment is
+  skipped meanwhile as seg_skip says.
+- A reload refused with a client error (4xx other than 429) fails at
+  once: the playlist is gone or not ours. A segment's 4xx is skipped, as
+  a segment that left a sliding window answers 404.
+- An error of the reader itself (ENOMEM, AVERROR_BUG, AVERROR_BUG2) does
+  not pass by waiting and fails the playlist at once, reload or segment,
+  whatever seg_skip says. 0071 counted these as transient, and a segment
+  failing so was skipped like a missing one.
+- The clocks, reload_error_time for reloads and segment_error_time for
+  segments, count from the start of the first failed request since the
+  last success, stop at the next success, and start afresh on a seek and
+  when the playlist is selected again (0078 made reload_error_time do so
+  too; it had been left from before the seek).
+
+This patch adds the third point; the others restate what 0071-0101 do.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -1947,9 +1947,18 @@ static int playlist_needed(struct playlist *pls)
+     return 0;
+ }
+ 
++/* An error of the reader itself, not of the server or the network: running
++ * out of memory or an internal bug does not pass by waiting, and the
++ * playlist fails at once, be it a reload's or a segment's. */
++static int error_is_local(int err)
++{
++    return err == AVERROR(ENOMEM) || err == AVERROR_BUG || err == AVERROR_BUG2;
++}
++
+ /* A reload refused with a client error (4xx other than 429) will not pass on a
+- * retry: the playlist is gone or not ours to read. A network error, a timeout,
+- * a server error or a garbled answer may. */
++ * retry: the playlist is gone or not ours to read; nor will a local error. A
++ * network error, a timeout, a server error, an empty or cut answer (EOF) or a
++ * garbled one may. */
+ static int reload_error_is_transient(int err)
+ {
+     switch (err) {
+@@ -1960,7 +1969,7 @@ static int reload_error_is_transient(int err)
+     case AVERROR_HTTP_OTHER_4XX:
+         return 0;
+     default:
+-        return 1;
++        return !error_is_local(err);
+     }
+ }
+ 
+@@ -2078,10 +2087,11 @@ check_segments:
+  * being skipped. A live playlist moves on without the segment; a finished one
+  * would just play on with a gap. With seg_skip=live, a live playlist whose
+  * segments have all failed for live_reload_timeout returns the error too, as
+- * its reloads would: skipping on would read nothing, without end. */
+-static int segment_failure_is_final(HLSContext *c, struct playlist *v)
++ * its reloads would: skipping on would read nothing, without end. A local
++ * error is final on every playlist. */
++static int segment_failure_is_final(HLSContext *c, struct playlist *v, int err)
+ {
+-    return c->seg_skip == SEG_SKIP_NEVER ||
++    return error_is_local(err) || c->seg_skip == SEG_SKIP_NEVER ||
+            (c->seg_skip == SEG_SKIP_LIVE && v->finished) ||
+            (c->seg_skip == SEG_SKIP_LIVE &&
+             av_gettime_relative() - v->segment_error_time >= live_reload_timeout(v, c));
+@@ -2140,7 +2150,7 @@ restart:
+         /* A segment whose early open failed and that left the playlist before
+          * it was due counts as failed and skipped. */
+         if (v->input_next_error && v->input_next_seq_no < v->cur_seq_no &&
+-            segment_failure_is_final(c, v)) {
++            segment_failure_is_final(c, v, v->input_next_error)) {
+             av_log(v->parent, AV_LOG_ERROR, "Segment %"PRId64" of playlist %d failed too many times: %s\n",
+                    v->input_next_seq_no, v->index, av_err2str(v->input_next_error));
+             ret = v->input_next_error;
+@@ -2160,7 +2170,7 @@ restart:
+             if (!v->segment_error_time)
+                 v->segment_error_time = open_start;
+             if (segment_retries >= c->seg_max_retry) {
+-                if (segment_failure_is_final(c, v)) {
++                if (segment_failure_is_final(c, v, ret)) {
+                     av_log(v->parent, AV_LOG_ERROR, "Initialization section of segment %"PRId64" of playlist %d failed too many times: %s\n",
+                            v->cur_seq_no, v->index, av_err2str(ret));
+                     return ret;
+@@ -2208,7 +2218,7 @@ restart:
+             if (!v->segment_error_time)
+                 v->segment_error_time = open_start;
+             if (segment_retries >= c->seg_max_retry) {
+-                if (segment_failure_is_final(c, v)) {
++                if (segment_failure_is_final(c, v, ret)) {
+                     av_log(v->parent, AV_LOG_ERROR, "Segment %"PRId64" of playlist %d failed too many times: %s\n",
+                            v->cur_seq_no, v->index, av_err2str(ret));
+                     /* The failed open closed the input. */
+@@ -2393,7 +2403,8 @@ static int read_data_subtitle_segment(void *opaque, uint8_t *buf, int buf_size)
+              * may: then the playlist failed. */
+             if (!v->segment_error_time)
+                 v->segment_error_time = open_start;
+-            if (av_gettime_relative() - v->segment_error_time >= live_reload_timeout(v, c))
++            if (error_is_local(ret) ||
++                av_gettime_relative() - v->segment_error_time >= live_reload_timeout(v, c))
+                 v->read_error = ret;
+             v->subtitle_segment_failed = 1;
+             return ret;
