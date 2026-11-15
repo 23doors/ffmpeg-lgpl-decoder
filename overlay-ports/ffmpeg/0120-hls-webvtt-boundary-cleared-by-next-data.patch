@@ -1,0 +1,37 @@
+hls: the WebVTT segment boundary ends with the next segment's first data
+
+0098 leaves room for a blank line before a WebVTT segment that follows
+another, and cleared the boundary flag only when it had left that room:
+a read of at most 2 bytes took the next segment's first bytes without
+the check and kept the flag for a later read, which then checked bytes
+from the middle of the segment as if they were its start. Harmless with hls' 32 KiB
+reads, but the flag did not mean what it says.
+
+Clear it with the first data after the boundary in any case; insert or
+move only when room was left.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -2386,15 +2386,17 @@ restart:
+     /* Each WebVTT segment is a file of its own, which need not end in a blank
+      * line: read on as one stream, the next segment's header lines would join
+      * the last cue's text. A segment that follows another and starts as a
+-     * WebVTT file is preceded by a blank line. */
++     * WebVTT file is preceded by a blank line. The boundary ends with the
++     * next segment's first data, whether room for the line was left (a read
++     * of at most 2 bytes has none) or not. */
+     vtt_gap = v->segment_boundary && buf_size > 2 ? 2 : 0;
+     ret = read_from_url(v, seg, buf + vtt_gap, buf_size - vtt_gap);
+-    if (vtt_gap && ret > 0) {
++    if (v->segment_boundary && ret > 0) {
+         v->segment_boundary = 0;
+-        if (starts_as_webvtt(buf + vtt_gap, ret)) {
++        if (vtt_gap && starts_as_webvtt(buf + vtt_gap, ret)) {
+             buf[0] = buf[1] = '\n';
+             ret += vtt_gap;
+-        } else {
++        } else if (vtt_gap) {
+             memmove(buf, buf + vtt_gap, ret);
+         }
+     }
