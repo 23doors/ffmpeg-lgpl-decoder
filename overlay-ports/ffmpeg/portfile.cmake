@@ -1,8 +1,12 @@
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO ffmpeg/ffmpeg
-    REF "n${VERSION}"
-    SHA512 8c667090bcdc70796caaa8cdc2cf82e57d7c7f6feedcb0ec7251cefd6a0c63b7cad203a86c800d3e2f69ca91255167aa4e631701060b96d576d1a9666ca7aafe
+    # release/8.1 head after n8.1.3 (2026-10-30; no n8.1.4 yet): the branch's
+    # decoder and demuxer fixes (h264_direct heap overflow, dxva2 frame->buf[]
+    # race, AAC USAC/SBR, cbs, mov/matroska/flv/ogg). Its RELEASE file still
+    # says 8.1.3, so av_version_info() reports "8.1.3" as on the tag.
+    REF f1acb0a2666c78d92688f4c3d2803a132f5590f6
+    SHA512 96988f9684227b8870165f40297e0df7282fd88d2f3529751a808a2b9c9bd5c4636d1a22af611140e381f5e04f48adae1e56b5c7acdef2f2b962cf5cf482abbd
     HEAD_REF master
     PATCHES
         0001-create-lib-libraries.patch

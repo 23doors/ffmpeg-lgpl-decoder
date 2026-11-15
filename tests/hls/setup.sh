@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds the hls fixture harness against the pack's FFmpeg: downloads the
-# pinned FFmpeg release (checked against the portfile's SHA512), applies the
+# portfile's REF (checked against its SHA512), applies the
 # portfile's patch series in order, configures a minimal static host build
 # (the hls, mpegts, mov, webvtt and aac demuxers, http/tcp/file/crypto/data,
 # the aac decoder for the packed audio's stream info) and links hlsread,
@@ -19,17 +19,20 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 PORT_DIR="$HERE/../../overlay-ports/ffmpeg"
 VERSION=$(sed -n 's/.*"version": "\([0-9.]*\)".*/\1/p' "$PORT_DIR/vcpkg.json" | head -1)
 SHA=$(sed -n 's/^ *SHA512 \([0-9a-f]*\)$/\1/p' "$PORT_DIR/portfile.cmake" | head -1)
+# the portfile's REF: a tag of the version ("n${VERSION}") or a commit
+REF=$(sed -n 's/^ *REF "*\([^" ]*\)"*$/\1/p' "$PORT_DIR/portfile.cmake" | head -1)
+[ "$REF" = 'n${VERSION}' ] && REF=n$VERSION
 
 cd "$W"
-if [ ! -f "n$VERSION.tar.gz" ]; then
-    curl -fsSL -o "n$VERSION.tar.gz.part" "https://github.com/FFmpeg/FFmpeg/archive/n$VERSION.tar.gz"
-    mv "n$VERSION.tar.gz.part" "n$VERSION.tar.gz"
+if [ ! -f "$REF.tar.gz" ]; then
+    curl -fsSL -o "$REF.tar.gz.part" "https://github.com/FFmpeg/FFmpeg/archive/$REF.tar.gz"
+    mv "$REF.tar.gz.part" "$REF.tar.gz"
 fi
-echo "$SHA  n$VERSION.tar.gz" | shasum -a 512 -c -
+echo "$SHA  $REF.tar.gz" | shasum -a 512 -c -
 
 rm -rf src build
-tar xzf "n$VERSION.tar.gz"
-mv "FFmpeg-n$VERSION" src
+tar xzf "$REF.tar.gz"
+mv "FFmpeg-$REF" src
 (cd src
  for p in $(sed -n '/PATCHES/,/^)/p' "$PORT_DIR/portfile.cmake" | grep -o '[0-9][0-9][0-9][0-9]-[^ ]*\.patch'); do
      n=${p%%-*}
