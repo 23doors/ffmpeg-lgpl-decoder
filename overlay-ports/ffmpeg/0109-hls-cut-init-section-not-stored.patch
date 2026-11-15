@@ -2,10 +2,13 @@ hls: an initialization section read that fails part way is no section
 
 update_init_section() took what read_from_url() returned for the whole
 section. avio_read() returns the bytes it read when a later read of the
-section fails (an interrupt, a connection cut with 0107's EIO), the error
-stays in the input's context, so a cut section was stored as complete:
-a truncated moov went to the subdemuxer, which failed to open, and the
-playlist was lost rather than one segment.
+section fails, and the error stays in the input's context: an interrupt
+(AVERROR_EXIT), or a connection closed before the section's end, which
+http reports as EIO for a body of known length (hls opens every request
+with seekable=1, so http.c's premature-end check applies, no reconnect
+options needed). A cut section was stored as complete: a truncated moov
+went to the subdemuxer, which failed to open, and the playlist was lost
+rather than one segment.
 
 Take the input's error before it is closed and return it when the read
 ended in one: the section is not stored, AVERROR_EXIT is returned as it
