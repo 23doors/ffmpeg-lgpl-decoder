@@ -57,14 +57,15 @@ RMPO="-o seg_max_retry=0 -o seg_skip=live -o m3u8_hold_counters=10 -o reconnect=
 
 # run NAME "server args" PATH [hlsread args]: the log in $OUT/NAME.log, the
 # server's request log in $OUT/NAME.server.log; HOST: the address asked for
-# (127.0.0.1)
+# (127.0.0.1). A server is waited for up to 30 s (it starts in 0.2 s; a
+# loaded host took over 5 s, the old limit, and the run found no server)
 run() {
     name=$1; sargs=$2; path=$3; shift 3
     PORT=$((PORT + 1))
     python3 -I "$HERE/server.py" $PORT $sargs > "$OUT/$name.server.log" 2>&1 &
     srv=$!
     i=0
-    until grep -q listening "$OUT/$name.server.log" 2>/dev/null || [ $i -ge 50 ]; do
+    until grep -q listening "$OUT/$name.server.log" 2>/dev/null || [ $i -ge 300 ]; do
         sleep 0.1; i=$((i + 1))
     done
     cap "$W/hlsread" "http://${HOST:-127.0.0.1}:$PORT$path" "$@" > "$OUT/$name.log" 2>&1
@@ -300,7 +301,7 @@ run2() { # 0104's fixture
     python3 -I "$HERE/server.py" $a --second-port $b > "$OUT/$name.server.log" 2>&1 &
     srv=$!
     i=0
-    until grep -q listening "$OUT/$name.server.log" 2>/dev/null || [ $i -ge 50 ]; do
+    until grep -q listening "$OUT/$name.server.log" 2>/dev/null || [ $i -ge 300 ]; do
         sleep 0.1; i=$((i + 1))
     done
     if [ "$which" = A ]; then port=$a; else port=$b; fi
@@ -421,7 +422,7 @@ runh() {
     python3 -I "$HERE/server.py" $A_PORT --second-port $B_PORT $sargs > "$OUT/$name.server.log" 2>&1 &
     srv=$!
     i=0
-    until grep -q listening "$OUT/$name.server.log" 2>/dev/null || [ $i -ge 50 ]; do
+    until grep -q listening "$OUT/$name.server.log" 2>/dev/null || [ $i -ge 300 ]; do
         sleep 0.1; i=$((i + 1))
     done
     url=${URL:-http://${HOST:-127.0.0.1}:$A_PORT$path}
@@ -524,7 +525,7 @@ check_cookies() { # 0123-0134: the cookie series (88fbd111ea ... de6fb646f7)
         python3 -I "$HERE/server.py" $A_PORT --second-port $B_PORT > "$OUT/$1.server.log" 2>&1 &
         srv=$!
         i=0
-        until grep -q listening "$OUT/$1.server.log" 2>/dev/null || [ $i -ge 50 ]; do
+        until grep -q listening "$OUT/$1.server.log" 2>/dev/null || [ $i -ge 300 ]; do
             sleep 0.1; i=$((i + 1))
         done
         cap "$W/hlsread" "http://127.0.0.1:$A_PORT/xo/index.m3u8?h=localhost" -q -o http_multiple=0 \
