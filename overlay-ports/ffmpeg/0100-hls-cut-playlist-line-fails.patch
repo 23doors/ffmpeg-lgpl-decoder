@@ -10,16 +10,18 @@ the base address overflowed in turn ("invalid:truncated").
 
 Read the lines with a local copy of ff_get_chomp_line() that also says
 whether characters were dropped. A cut line that names an address (a URI
-line, or a tag with a URI attribute) fails the load with
+line, or an EXT-X-KEY, EXT-X-MAP or EXT-X-MEDIA tag, whose URI attribute
+this demuxer reads) fails the load with
 AVERROR_INVALIDDATA and an error naming the limit; any other cut line (a
-long title, attribute list or comment) loses only what this demuxer does
-not read and is read as before, with a warning. A failed reload of a live
+long title, a comment, a tag this demuxer does not read, such as an
+EXT-X-DATERANGE with an X-ASSET-URI= or SCTE-35 payload) loses only what
+it does not read and is read as before, with a warning. A failed reload of a live
 playlist is handled as any other garbled answer (0071).
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -1002,6 +1002,30 @@ static void set_subtitle_io_opts(HLSContext *c, AVDictionary **opts)
+@@ -1006,6 +1006,30 @@ static void set_subtitle_io_opts(HLSContext *c, AVDictionary **opts)
      av_dict_set_int(opts, "reconnect_max_retries", 0, 0);
  }
  
@@ -50,7 +52,7 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
  static int parse_playlist(HLSContext *c, const char *url,
                            struct playlist *pls, AVIOContext *in)
  {
-@@ -1094,7 +1118,23 @@ static int parse_playlist(HLSContext *c, const char *url,
+@@ -1098,7 +1122,26 @@ static int parse_playlist(HLSContext *c, const char *url,
          pls->type = PLS_TYPE_UNSPECIFIED;
      }
      while (!avio_feof(in)) {
@@ -59,9 +61,12 @@ diff --git a/libavformat/hls.c b/libavformat/hls.c
 +
 +        get_chomp_line(in, line, sizeof(line), &cut);
 +        /* A cut address would be asked for cut (a server answers 400) or
-+         * name something else; a cut title, attribute list or comment
-+         * loses only what this demuxer does not read. */
-+        if (cut && (line[0] != '#' || strstr(line, "URI="))) {
++         * name something else: a URI line, or a tag whose URI= this demuxer
++         * reads. A cut title, comment or other tag (an EXT-X-DATERANGE's
++         * X-ASSET-URI= or SCTE-35 payload) loses only what it does not read. */
++        if (cut && (line[0] != '#' || av_strstart(line, "#EXT-X-KEY:", NULL) ||
++                    av_strstart(line, "#EXT-X-MAP:", NULL) ||
++                    av_strstart(line, "#EXT-X-MEDIA:", NULL))) {
 +            av_log(c->ctx, AV_LOG_ERROR,
 +                   "Playlist line longer than %d characters: %.64s...\n",
 +                   (int)sizeof(line) - 1, line);
