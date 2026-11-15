@@ -1,0 +1,97 @@
+hls: a WebVTT segment read on from the one before starts a new block
+
+A media playlist of WebVTT segments that is opened on its own (a VOD
+subtitle sidecar, not a rendition of a master playlist, whose segments
+read_subtitle_packet() opens one by one) is read as one byte stream: each
+segment's data follows the previous one's. Each segment is a WebVTT file
+of its own (RFC 8216, 3.5), and a file need not end in a blank line. When
+it does not, the webvtt demuxer reads the next segment's "WEBVTT" and
+X-TIMESTAMP-MAP= header lines as more lines of the last cue, which shows
+them on screen; a file that ends without a newline even joins "WEBVTT" to
+the cue's last line.
+
+When a segment that follows another one starts as a WebVTT file (an
+optional BOM, then "WEBVTT" alone or followed by a space, tab or line
+end), put a blank line in front of it, so its header is a block of its
+own, which the demuxer skips (or applies, with timestamp_map). Other
+segment data (MPEG-TS, fMP4, ID3, ADTS) never starts that way and reads
+as before.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -170,6 +170,9 @@ struct playlist {
+     int64_t subtitle_retry_time;
+     /* The error the playlist failed with for good, kept until a seek. */
+     int read_error;
++    /* A segment of the playlist was read to its end, and no data of the next
++     * one, which follows it in the playlist's byte stream, was read yet. */
++    int segment_boundary;
+ 
+     /* Currently active Media Initialization Section */
+     struct segment *cur_init_section;
+@@ -2044,6 +2047,17 @@ static int segment_failure_is_final(HLSContext *c, struct playlist *v)
+             av_gettime_relative() - v->segment_error_time >= live_reload_timeout(v, c));
+ }
+ 
++static int starts_as_webvtt(const uint8_t *buf, int size)
++{
++    if (size >= 3 && !memcmp(buf, "\xEF\xBB\xBF", 3)) {
++        buf  += 3;
++        size -= 3;
++    }
++    return size >= 6 && !memcmp(buf, "WEBVTT", 6) &&
++           (size == 6 || buf[6] == ' ' || buf[6] == '\t' ||
++            buf[6] == '\r' || buf[6] == '\n');
++}
++
+ static int read_playlist_data(void *opaque, uint8_t *buf, int buf_size)
+ {
+     struct playlist *v = opaque;
+@@ -2051,6 +2065,7 @@ static int read_playlist_data(void *opaque, uint8_t *buf, int buf_size)
+     int ret;
+     int just_opened = 0;
+     int segment_retries = 0;
++    int vtt_gap;
+     struct segment *seg;
+ 
+     /* A request that failed after the last segment was read to its end on
+@@ -2194,7 +2209,21 @@ restart:
+     }
+ 
+     seg = current_segment(v);
+-    ret = read_from_url(v, seg, buf, buf_size);
++    /* Each WebVTT segment is a file of its own, which need not end in a blank
++     * line: read on as one stream, the next segment's header lines would join
++     * the last cue's text. A segment that follows another and starts as a
++     * WebVTT file is preceded by a blank line. */
++    vtt_gap = v->segment_boundary && buf_size > 2 ? 2 : 0;
++    ret = read_from_url(v, seg, buf + vtt_gap, buf_size - vtt_gap);
++    if (vtt_gap && ret > 0) {
++        v->segment_boundary = 0;
++        if (starts_as_webvtt(buf + vtt_gap, ret)) {
++            buf[0] = buf[1] = '\n';
++            ret += vtt_gap;
++        } else {
++            memmove(buf, buf + vtt_gap, ret);
++        }
++    }
+     if (ret > 0) {
+         if (just_opened && v->is_id3_timestamped != 0) {
+             /* Intercept ID3 tags here, elementary audio streams are required
+@@ -2207,6 +2236,7 @@ restart:
+     if (ret == 0 && segment_continues(seg, next_segment(v), v->input_end)) {
+         /* The next segment follows within the requested range and is read
+          * on from the same input. */
++        v->segment_boundary = 1;
+         v->cur_seq_no++;
+         c->cur_seq_no = v->cur_seq_no;
+         v->cur_seg_offset = 0;
+@@ -2225,6 +2255,7 @@ restart:
+     } else {
+         ff_format_io_close(v->parent, &v->input);
+     }
++    v->segment_boundary = 1;
+     v->cur_seq_no++;
+ 
+     c->cur_seq_no = v->cur_seq_no;
