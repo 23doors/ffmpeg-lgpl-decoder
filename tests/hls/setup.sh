@@ -85,6 +85,15 @@ if [ ! -f "$M/tsbig/s19.ts" ]; then
         -c:a aac -b:a 64k -f hls -hls_time 1 -hls_list_size 0 \
         -hls_segment_filename "$M/tsbig/s%d.ts" "$M/tsbig/full.m3u8"
 fi
+if [ ! -f "$M/sidx/sidx.mp4" ]; then
+    # a fragmented MP4 with a global sidx (as DASH on-demand and CMAF files
+    # have: mov switches roots at every fragment), video only, so that mov
+    # reads it in order: server.py serves it with byte ranges
+    rm -rf "$M/sidx"; mkdir -p "$M/sidx"
+    ffmpeg -nostdin -v error -f lavfi -i testsrc=size=320x240:rate=25 -t 240 \
+        -c:v libx264 -g 50 -keyint_min 50 -sc_threshold 0 -b:v 300k -an \
+        -movflags +frag_keyframe+empty_moov+default_base_moof+global_sidx "$M/sidx/sidx.mp4"
+fi
 if [ ! -f "$M/aes/s19.ts" ]; then
     # the TS segments AES-128 encrypted (CBC, PKCS7), as server.py's /aes/ lists them
     rm -rf "$M/aes"; mkdir -p "$M/aes"

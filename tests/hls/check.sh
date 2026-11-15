@@ -3,19 +3,25 @@
 # harness built by setup.sh. Each check prints PASS or FAIL; the exit status
 # is the number of failures. With the series only up to 0097
 # (setup.sh WORKDIR 0097) all fail but xo-ipv6 (without 0104 the headers go
-# everywhere, IPv6 included), the i54 trace, and cut-akamai and trunc-*,
-# which hold what stock FFmpeg does (a placeholder length reconnects; an
-# input that ends where an interrupt cut it ends: 0108 and 0110 without 0112
-# fail it).
+# everywhere, IPv6 included), the i54 trace, and cut-akamai, trunc-* and
+# sidx, which hold what stock FFmpeg does (a placeholder length reconnects;
+# an input that ends where an interrupt cut it ends: 0108 and 0110 without
+# 0112 fail it; a seekable fragmented MP4 reads with no extra request).
 #
 # usage: tests/hls/check.sh WORKDIR [CHECK...]
-#   checks: b19 b20 trunc chunk-trailer id3 i51 i52 init-dedup init-cut
+#   checks: b19 b20 trunc chunk-trailer sidx id3 i51 i52 init-dedup init-cut
 #           headers-origin i54 cut-body
 #   (default: all)
 set -u
 W=$(cd "$1" && pwd); shift
 HERE=$(cd "$(dirname "$0")" && pwd)
 OUT="$W/out"; mkdir -p "$OUT"
+# a harness older than hlsread.c reports less (no CRCs before round 3's):
+# setup.sh builds it again
+if [ "$HERE/hlsread.c" -nt "$W/hlsread" ]; then
+    echo "FAIL harness: $W/hlsread is older than $HERE/hlsread.c (run setup.sh $W)"
+    exit 1
+fi
 export HLS_FIXTURE_MEDIA="$W/media"
 PORT=${PORT:-18790}
 FAIL=0
@@ -63,7 +69,9 @@ read_on() { # NAME REF "server args" PATH: interrupted in a stall, nothing lost
     want1=$(field "$ref" s1); got1=$(field "$name" s1)
     # the packets' data, byte for byte (a TS packet lost inside a video PES
     # of no stated length changes no count)
-    same=0; [ "$(field "$ref" crc0)$(field "$ref" crc1)" = "$(field "$name" crc0)$(field "$name" crc1)" ] && same=1
+    same=0
+    [ -n "$(field "$ref" crc0)" ] &&
+        [ "$(field "$ref" crc0)$(field "$ref" crc1)" = "$(field "$name" crc0)$(field "$name" crc1)" ] && same=1
     # hlsread's interrupts (each may give more than one AVERROR_EXIT); the
     # line comes from stderr into the file stdout also writes, so it is not
     # anchored at a line start
@@ -126,6 +134,18 @@ check_trunc() { # 0112: an interrupt where a truncated last segment ends
         ok=$?; how=$(grep -E '^(end|maxtime)' "$OUT/trunc-$kind.log" | head -1)
         result trunc-$kind "interrupted ($ints), the input ends ($ex AVERROR_EXIT; $how)" $ok
     done
+}
+check_sidx() { # 0111: a seekable fragmented MP4 (sidx) reads as stock mov reads it
+    # over http with byte ranges: the request for the file, mov's look at its
+    # last 4 bytes (mfro), the one back to the first fragment, then in order
+    # (0111's preload ran here too: a Range request where a fragment's atoms
+    # spanned the buffer); the packets those of the file read from disk
+    run sidx "" /prog/sidx.mp4 -q
+    "$W/hlsread" "file:$W/media/sidx/sidx.mp4" -q > "$OUT/sidx-file.log" 2>&1
+    req=$(grep -c 'GET /prog/sidx.mp4' "$OUT/sidx.server.log")
+    want=$(field sidx-file s0); got=$(field sidx s0); wcrc=$(field sidx-file crc0); crc=$(field sidx crc0)
+    [ "$req" = 3 ] && [ -n "$want" ] && [ "$got" = "$want" ] && [ -n "$wcrc" ] && [ "$crc" = "$wcrc" ]
+    result sidx "3 requests ($req), all $want packets ($got), the file's data (crc $crc, $wcrc)" $?
 }
 check_chunk_trailer() { # 0106: a chunked reply with a trailer field, on a kept-alive connection
     run trailer-ref "" /vod/index.m3u8 -q
@@ -302,6 +322,6 @@ check_cut_body() { # 0107: a cut body from a server without ranges is not read a
     result cut-aes "the cut AES-128 segment requested once ($req), read on to the end (s19: $after), $got of $full video packets" $?
 }
 
-CHECKS=${*:-b19 b20 trunc chunk_trailer id3 i51 i52 init_dedup init_cut headers_origin i54 cut_body}
+CHECKS=${*:-b19 b20 trunc chunk_trailer sidx id3 i51 i52 init_dedup init_cut headers_origin i54 cut_body}
 for c in $CHECKS; do "check_$(echo "$c" | tr - _)"; done
 exit $FAIL

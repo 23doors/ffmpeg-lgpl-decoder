@@ -38,6 +38,9 @@ Paths:
   /vtt/subs.m3u8    VOD WebVTT segments ending in a newline, none or a blank line
   /long/index.m3u8  VOD TS with a long first segment URL
   /prog/file.ts     a progressive TS file (s0..s4, 5 s), no Accept-Ranges
+  /prog/sidx.mp4    a fragmented MP4 with a global sidx (setup.sh's media/sidx), served
+                    with byte ranges (Accept-Ranges; a Range gets 206), one request per
+                    connection: a seekable input
   /prog/akamai.ts   s0..s4 as a live stream from "Server: AkamaiGHost" with
                     its placeholder Content-Length 2147483647, no Accept-Ranges;
                     the connection closes after them (each request alike)
@@ -228,9 +231,10 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         p = self.path.split("?")[0]
         port = self.server.server_address[1]
-        log("GET %s port=%d token=%s conn=%d" % (p if len(p) < 200 else p[:60] + "...(%d)" % len(p),
-                                                 port, "yes" if self.headers.get("X-Token") else "no",
-                                                 self.client_address[1]))
+        log("GET %s port=%d token=%s conn=%d%s" % (p if len(p) < 200 else p[:60] + "...(%d)" % len(p),
+                                                   port, "yes" if self.headers.get("X-Token") else "no",
+                                                   self.client_address[1],
+                                                   " range=" + self.headers["Range"] if self.headers.get("Range") else ""))
         try:
             self.route(p)
         except (BrokenPipeError, ConnectionResetError):
@@ -329,6 +333,34 @@ class H(BaseHTTPRequestHandler):
         if p == "/prog/file.ts":
             body = b"".join(open(os.path.join(D, "ts", "s%d.ts" % n), "rb").read() for n in range(5))
             return self.send(200, body, "video/mp2t", cut=CUT is not None)
+        if p == "/prog/sidx.mp4":
+            body = open(os.path.join(D, "sidx", "sidx.mp4"), "rb").read()
+            first, last = 0, len(body) - 1
+            rng = self.headers.get("Range", "")
+            if rng.startswith("bytes="):
+                a, b = rng[len("bytes="):].split("-", 1)
+                first = int(a)
+                if b:
+                    last = min(int(b), last)
+            if first > last:
+                self.send_response(416)
+                self.send_header("Content-Range", "bytes */%d" % len(body))
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            self.send_response(206 if rng else 200)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Accept-Ranges", "bytes")
+            # one request per connection, as http.c asks (else it would
+            # seek on a connection this server closes)
+            self.send_header("Connection", "close")
+            self.close_connection = True
+            if rng:
+                self.send_header("Content-Range", "bytes %d-%d/%d" % (first, last, len(body)))
+            self.send_header("Content-Length", str(last - first + 1))
+            self.end_headers()
+            self.wfile.write(body[first:last + 1])
+            return
         if p == "/prog/akamai.ts":
             body = b"".join(open(os.path.join(D, "ts", "s%d.ts" % n), "rb").read() for n in range(5))
             self.server_name = "AkamaiGHost"

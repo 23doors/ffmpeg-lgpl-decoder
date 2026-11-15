@@ -12,7 +12,8 @@
  * Prints per packet "pkt <t_wall> <stream> <pts_s> <size>" (subtitle packets
  * with their text), and a summary: packets per stream, a CRC of each
  * stream's packet data (crcN, the packets in order), the largest pts step
- * of stream 0, the result. */
+ * of stream 0, the result. Counts and CRCs cover streams 0-15 only (the
+ * fixtures have two). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
