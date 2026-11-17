@@ -143,6 +143,10 @@ vcpkg_from_github(
         # fails the seek instead of landing short of it.
         0160-matroskadec-retry-cues-read-after-io-failure.patch
         0161-avformat-seek-generic-search-read-failure.patch
+        # hls (own): a VOD subtitle playlist starts at the media's segment and
+        # never asks for one ahead of it; a failed VOD subtitle segment is
+        # asked for once more. Probed by the subtitle_follow_media option.
+        0162-hls-vod-subtitle-playlist-follows-the-media.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

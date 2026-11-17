@@ -1,0 +1,228 @@
+avformat/hls: read a VOD subtitle playlist along the media's segment
+
+The subtitle renditions are read in the same call as the media. A VOD
+subtitle playlist was read from its first segment on, as fast as the
+reader asked, which on a transcoding server (Plex, Jellyfin) is wrong
+twice over:
+- a transcode started at an offset lists hundreds of empty segments
+  before it, and the subtitle playlist asked for every one of them before
+  its first cue (the media had skipped them already);
+- a transcoder holds a request for a segment ahead of its progress until
+  it gets there, and a held subtitle request held the media.
+
+A VOD subtitle playlist now starts at the media's segment when it is
+placed (opened, selected again, after a seek): the segment holding the
+start of the media's previous one, the two playlists matched by their
+segments' start times, as both servers cut them alike. After that it
+reads on in order, also behind the media (the read-ahead is still to be
+played), but never asks for a segment starting more than half a target
+duration past the media's: it returns EOF for the call and is read again
+with the next one. A media playlist read to its end lets every segment
+through.
+
+A VOD subtitle segment that fails (its request gives up after 2 s, 0079)
+is asked for once more (Jellyfin extracts a subtitle on its first
+request), then the next one, each a target duration later but 4 s at
+most (Jellyfin's subtitle segments last 30 s, and its first extraction of
+a long film's subtitles takes seconds); the live tolerance
+(live_reload_timeout) ends the track, as for a live playlist. So a
+subtitle server that stalls holds the media 2 s at most once in 4 s or a
+target duration, whichever is shorter, and for that tolerance at most.
+
+subtitle_follow_media (default 1) turns it off; a player probes it to
+know the pack reads VOD subtitle renditions so.
+
+Our own patch.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index f6ac449..f52eebc 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -171,6 +171,11 @@ struct playlist {
+      * when the next one may be asked for. */
+     int subtitle_segment_failed;
+     int64_t subtitle_retry_time;
++    /* A VOD subtitle playlist's failed segment was asked for once more. */
++    int subtitle_segment_retried;
++    /* A VOD subtitle playlist starts at the media's segment at its next read
++     * (opened, selected again, or after a seek). */
++    int subtitle_follow_media;
+     /* The error the playlist failed with for good, kept until a seek. */
+     int read_error;
+     /* A segment of the playlist was read to its end, and no data of the next
+@@ -324,6 +329,7 @@ typedef struct HLSContext {
+     int seg_max_retry;
+     int seg_skip;
+     int64_t live_reload_timeout;
++    int subtitle_follow_media;      /* VOD subtitle playlists read along the media's segment */
+     AVIOContext *playlist_pb;
+     HLSCryptoContext  crypto_ctx;
+ 
+@@ -2724,6 +2730,90 @@ static void unwrap_cue_pts(HLSContext *c, struct playlist *v, AVPacket *pkt)
+     v->last_cue_pts = pkt->pts;
+ }
+ 
++/* The longest wait before a failed VOD subtitle segment is asked for again. */
++#define SUBTITLE_VOD_RETRY_MAX (4 * AV_TIME_BASE)
++
++/* The start of a segment on its playlist's own time line: the durations of
++ * the segments before it. */
++static int64_t segment_start_time(const struct playlist *pls, int64_t seq_no)
++{
++    int64_t t = 0;
++
++    for (int64_t k = 0; k < seq_no - pls->start_seq_no && k < pls->n_segments; k++)
++        t = av_sat_add64(t, pls->segments[k]->duration);
++    return t;
++}
++
++/* The VOD media playlist a VOD subtitle playlist follows: the first one read. */
++static struct playlist *followed_media_playlist(HLSContext *c)
++{
++    for (int i = 0; i < c->n_playlists; i++) {
++        struct playlist *pls = c->playlists[i];
++
++        if (!pls->is_subtitle && pls->needed && pls->finished && pls->n_segments)
++            return pls;
++    }
++    return NULL;
++}
++
++/* A VOD subtitle playlist is read with the media, in the same call: it asks
++ * only for segments the media has reached, which the server has (a
++ * transcoder holds a request ahead of its progress, and a held subtitle
++ * request held the media), and starts at the media's segment, not at the
++ * playlist's start (a transcode started at an offset lists hundreds of empty
++ * segments before it). Both playlists' segments are matched by their start on
++ * the playlists' time lines (Plex and Jellyfin cut both alike). Returns 0 to
++ * open the subtitle playlist's current segment, AVERROR(EAGAIN) to wait for
++ * the media. */
++static int follow_media_segment(HLSContext *c, struct playlist *v)
++{
++    struct playlist *media;
++    int64_t media_start, start, slack_start;
++    int64_t idx;
++
++    if (!c->subtitle_follow_media || !v->finished || !(media = followed_media_playlist(c)))
++        return 0;
++    media_start = segment_start_time(media, media->cur_seq_no);
++    /* The media may have read into its next segment: one segment before
++     * it is kept. */
++    slack_start = segment_start_time(media, FFMAX(media->cur_seq_no - 1, media->start_seq_no));
++
++    idx = v->cur_seq_no - v->start_seq_no;
++    if (idx < 0 || idx >= v->n_segments)
++        return 0;
++    start = segment_start_time(v, v->cur_seq_no);
++    /* Placed where the media is when opened, selected again or after a seek.
++     * Later it reads on in order, also behind the media after a failed
++     * segment: the media's read-ahead is still to be played. */
++    if (v->subtitle_follow_media) {
++        v->subtitle_follow_media = 0;
++        /* back to the segment holding the media's previous one's start */
++        while (idx > 0 && start > slack_start) {
++            idx--;
++            start -= v->segments[idx]->duration;
++        }
++        /* skip the segments that end before it */
++        while (idx < v->n_segments - 1 &&
++               av_sat_add64(start, v->segments[idx]->duration) <= slack_start) {
++            start = av_sat_add64(start, v->segments[idx]->duration);
++            idx++;
++        }
++        if (v->start_seq_no + idx != v->cur_seq_no) {
++            av_log(v->parent, AV_LOG_VERBOSE,
++                   "Subtitle playlist %d moves from segment %"PRId64" to %"PRId64
++                   " with the media\n", v->index, v->cur_seq_no, v->start_seq_no + idx);
++            v->cur_seq_no = v->start_seq_no + idx;
++        }
++    }
++    /* Not ahead of the media: half a target duration covers segments cut
++     * apart by a frame. A media playlist read to its end lets every one
++     * through. */
++    if (media->cur_seq_no - media->start_seq_no < media->n_segments &&
++        start > av_sat_add64(media_start, media->target_duration / 2))
++        return AVERROR(EAGAIN);
++    return 0;
++}
++
+ static int read_subtitle_packet(struct playlist *v, AVPacket *pkt)
+ {
+     HLSContext *c = v->parent->priv_data;
+@@ -2747,6 +2837,8 @@ restart:
+         ff_format_io_close(v->parent, &v->input);
+ 
+     if (!v->input && !v->ctx) {
++        if (follow_media_segment(c, v) < 0)
++            return AVERROR_EOF;
+         /* nothing is repeated across a discontinuity */
+         seg = current_segment(v);
+         if (seg && seg->discontinuity_seq != v->cues_discontinuity_seq) {
+@@ -2790,17 +2882,27 @@ restart:
+     FFSWAP(int, v->n_prev_cues, v->n_cur_cues);
+     v->prev_cue_pos = 0;
+ 
+-    /* The subtitles are read in the same call as the media: after a live
++    /* The subtitles are read in the same call as the media: after a
+      * segment that failed (its request given up after 2 s), the next one is
+      * asked for a target duration later, as it comes, so a subtitle server
+-     * that stalls holds the media for 2 s at most that often. */
++     * that stalls holds the media for 2 s at most that often. A VOD
++     * playlist asks for the failed segment once more first (a server slow
++     * to make it, as Jellyfin extracting a subtitle on its first request),
++     * and asks again 4 s later at most: Jellyfin's segments last 30 s, and
++     * its first extraction of a long film takes several seconds. */
+     if (v->subtitle_segment_failed) {
+         v->subtitle_segment_failed = 0;
+-        if (!v->finished) {
+-            v->subtitle_retry_time = av_gettime_relative() + v->target_duration;
+-            return AVERROR_EOF;
++        if (v->finished && !v->subtitle_segment_retried) {
++            v->subtitle_segment_retried = 1;
++            v->cur_seq_no--;
++        } else {
++            v->subtitle_segment_retried = 0;
+         }
++        v->subtitle_retry_time = av_gettime_relative() +
++            (v->finished ? FFMIN(v->target_duration, SUBTITLE_VOD_RETRY_MAX) : v->target_duration);
++        return AVERROR_EOF;
+     }
++    v->subtitle_segment_retried = 0;
+ 
+     goto restart;
+ }
+@@ -3335,6 +3437,7 @@ static int hls_read_header(AVFormatContext *s)
+         }
+ 
+         if (pls->is_subtitle) {
++            pls->subtitle_follow_media = 1;
+             /* Each segment gets a buffer of its own (init_subtitle_context()). */
+             ffio_init_context(&pls->pb, (unsigned char*)av_strdup("WEBVTT\n"), (int)strlen("WEBVTT\n"), 0, pls,
+                                        NULL, NULL, NULL);
+@@ -3574,6 +3677,8 @@ static int recheck_discard_flags(AVFormatContext *s)
+             pls->segment_error_time = 0;
+             pls->subtitle_segment_failed = 0;
+             pls->subtitle_retry_time = 0;
++            pls->subtitle_segment_retried = 0;
++            pls->subtitle_follow_media = 1;
+             pls->segment_boundary = 0;
+             pls->pb.pub.eof_reached = 0;
+             pls->pb.pub.error = 0;
+@@ -4228,6 +4333,8 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+         pls->segment_error_time = 0;
+         pls->subtitle_segment_failed = 0;
+         pls->subtitle_retry_time = 0;
++        pls->subtitle_segment_retried = 0;
++        pls->subtitle_follow_media = 1;
+         pls->read_error = 0;
+         ff_format_io_close(pls->parent, &pls->input_next);
+         pls->input_next_requested = 0;
+@@ -4410,6 +4517,8 @@ static const AVOption hls_options[] = {
+         {"never",  "no playlist: return the error", 0, AV_OPT_TYPE_CONST, {.i64 = SEG_SKIP_NEVER}, 0, 0, FLAGS, .unit = "seg_skip"},
+     {"live_reload_timeout", "How long a live playlist plays on while its reloads or segments fail, -1 for three target durations but at least 20 seconds",
+         OFFSET(live_reload_timeout), AV_OPT_TYPE_DURATION, {.i64 = -1}, -1, INT64_MAX, FLAGS},
++    {"subtitle_follow_media", "Read a VOD subtitle playlist from the media's segment on, never ahead of it",
++        OFFSET(subtitle_follow_media), AV_OPT_TYPE_BOOL, {.i64 = 1}, 0, 1, FLAGS},
+ #define EXPORT (FLAGS | AV_OPT_FLAG_EXPORT | AV_OPT_FLAG_READONLY)
+     {"hls_playlist_type", "type of the playlist the timeline follows (0 live, 1 event, 2 vod)",
+         OFFSET(live_playlist_type), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 2, EXPORT},
