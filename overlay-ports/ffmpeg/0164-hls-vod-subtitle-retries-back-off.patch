@@ -8,10 +8,12 @@ track. A server extracting a long film's subtitles on the first request
 segment requests for longer than that, and the track was gone for the
 rest of the film.
 
-A VOD subtitle playlist no longer fails on segments that do not come:
-its tries wait min(target duration, 4 s) first and twice as long after
-each failure, up to subtitle_vod_retry_max (30 s by default), for as
-long as the media plays. Each segment is still asked for twice before
+A VOD subtitle playlist no longer fails on segments that do not come.
+Its tries wait min(target duration, 4 s), as before, for as long as the
+live tolerance would have kept the track, so a short extraction loses no
+more cues than with 0162 alone; after that each wait is twice the last,
+up to subtitle_vod_retry_max (30 s by default), for as long as the media
+plays. Each segment is still asked for twice before
 the next one, and a request still holds the media 2 s at most. A
 segment that opens resets the wait, as do a seek and a reselection. A
 local error (a bad URL, an invalid answer) still ends the track, as
@@ -23,7 +25,7 @@ subtitle_vod_retry_max is the probe.
 Our own patch.
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index 0507e88..eecbd00 100644
+index 0507e88..400259b 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
 @@ -173,6 +173,9 @@ struct playlist {
@@ -70,36 +72,42 @@ index 0507e88..eecbd00 100644
  
 -/* The longest wait before a failed VOD subtitle segment is asked for again. */
 -#define SUBTITLE_VOD_RETRY_MAX (4 * AV_TIME_BASE)
-+/* The longest first wait before a failed VOD subtitle segment is asked for
-+ * again. */
++/* The longest wait before a failed VOD subtitle segment is asked for again
++ * while its failures are younger than the live tolerance. */
 +#define SUBTITLE_VOD_RETRY_FIRST (4 * AV_TIME_BASE)
  
  /* The start of a segment on its playlist's own time line: the durations of
   * the segments before it. */
-@@ -2889,8 +2898,11 @@ restart:
+@@ -2889,8 +2898,13 @@ restart:
       * that stalls holds the media for 2 s at most that often. A VOD
       * playlist asks for the failed segment once more first (a server slow
       * to make it, as Jellyfin extracting a subtitle on its first request),
 -     * and asks again 4 s later at most: Jellyfin's segments last 30 s, and
 -     * its first extraction of a long film takes several seconds. */
-+     * first min(target duration, 4 s) later (Jellyfin's segments last 30 s,
-+     * and its first extraction of a long film takes seconds), then twice as
-+     * long after each failure, up to subtitle_vod_retry_max, and never
-+     * gives up: a slow server costs cues, not the track. Once one opens, it
-+     * reads on in order from there, behind the media. */
++     * min(target duration, 4 s) later (Jellyfin's segments last 30 s, and
++     * its first extraction of a long film takes seconds). It asks that
++     * often for as long as a live playlist's segments may fail (where the
++     * track used to end), then twice as long after each failure, up to
++     * subtitle_vod_retry_max, and never gives up: a slow server costs cues,
++     * not the track, and a short extraction no more cues than before. Once
++     * one opens, it reads on in order from there, behind the media. */
      if (v->subtitle_segment_failed) {
          v->subtitle_segment_failed = 0;
          if (v->finished && !v->subtitle_segment_retried) {
-@@ -2899,11 +2911,19 @@ restart:
+@@ -2899,11 +2913,23 @@ restart:
          } else {
              v->subtitle_segment_retried = 0;
          }
 -        v->subtitle_retry_time = av_gettime_relative() +
 -            (v->finished ? FFMIN(v->target_duration, SUBTITLE_VOD_RETRY_MAX) : v->target_duration);
 +        if (v->finished) {
-+            v->subtitle_retry_wait = v->subtitle_retry_wait ?
-+                av_sat_add64(v->subtitle_retry_wait, v->subtitle_retry_wait) :
-+                FFMIN(v->target_duration, SUBTITLE_VOD_RETRY_FIRST);
++            int64_t first = FFMIN(v->target_duration, SUBTITLE_VOD_RETRY_FIRST);
++
++            if (av_gettime_relative() - v->segment_error_time < live_reload_timeout(v, c))
++                v->subtitle_retry_wait = first;
++            else
++                v->subtitle_retry_wait = FFMAX(av_sat_add64(v->subtitle_retry_wait,
++                                                            v->subtitle_retry_wait), first);
 +            v->subtitle_retry_wait = FFMIN(v->subtitle_retry_wait, c->subtitle_vod_retry_max);
 +        } else {
 +            v->subtitle_retry_wait = v->target_duration;
@@ -112,7 +120,7 @@ index 0507e88..eecbd00 100644
  
      goto restart;
  }
-@@ -3718,6 +3738,7 @@ static int recheck_discard_flags(AVFormatContext *s)
+@@ -3718,6 +3744,7 @@ static int recheck_discard_flags(AVFormatContext *s)
              pls->subtitle_segment_failed = 0;
              pls->subtitle_retry_time = 0;
              pls->subtitle_segment_retried = 0;
@@ -120,7 +128,7 @@ index 0507e88..eecbd00 100644
              pls->subtitle_follow_media = 1;
              pls->segment_boundary = 0;
              pls->pb.pub.eof_reached = 0;
-@@ -4374,6 +4395,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -4374,6 +4401,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
          pls->subtitle_segment_failed = 0;
          pls->subtitle_retry_time = 0;
          pls->subtitle_segment_retried = 0;
@@ -128,7 +136,7 @@ index 0507e88..eecbd00 100644
          pls->subtitle_follow_media = 1;
          pls->read_error = 0;
          ff_format_io_close(pls->parent, &pls->input_next);
-@@ -4557,6 +4579,8 @@ static const AVOption hls_options[] = {
+@@ -4557,6 +4585,8 @@ static const AVOption hls_options[] = {
          {"never",  "no playlist: return the error", 0, AV_OPT_TYPE_CONST, {.i64 = SEG_SKIP_NEVER}, 0, 0, FLAGS, .unit = "seg_skip"},
      {"live_reload_timeout", "How long a live playlist plays on while its reloads or segments fail, -1 for three target durations but at least 20 seconds",
          OFFSET(live_reload_timeout), AV_OPT_TYPE_DURATION, {.i64 = -1}, -1, INT64_MAX, FLAGS},
