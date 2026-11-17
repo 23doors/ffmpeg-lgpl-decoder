@@ -138,6 +138,11 @@ vcpkg_from_github(
         # http again: 0136's code check relaxed (own), upstream master's 90dae166b5.
         0158-http-status-reason-glued-to-code.patch
         0159-http-90dae166b5-Fix-shadowing.patch
+        # matroskadec/seek (own, upstreamable): a cue read failed on I/O is
+        # read again at the next seek; a generic search whose read failed
+        # fails the seek instead of landing short of it.
+        0160-matroskadec-retry-cues-read-after-io-failure.patch
+        0161-avformat-seek-generic-search-read-failure.patch
 )
 
 if(SOURCE_PATH MATCHES " ")
