@@ -9,26 +9,36 @@ segment requests for longer than that, and the track was gone for the
 rest of the film.
 
 A VOD subtitle playlist no longer fails on segments that do not come.
-Its tries wait min(target duration, 4 s), as before, for as long as the
-live tolerance would have kept the track, so a short extraction loses no
-more cues than with 0162 alone; after that each wait is twice the last,
-up to subtitle_vod_retry_max (30 s by default), for as long as the media
-plays. Each segment is still asked for twice before
-the next one, and a request still holds the media 2 s at most. A
-segment that opens resets the wait, as do a seek and a reselection. A
-local error (a bad URL, an invalid answer) still ends the track, as
-does the tolerance on a live playlist. A slow server costs cues, not
-the track.
+Its tries wait min(target duration, 4 s) (at least 1 s), as before, for
+as long as the live tolerance would have kept the track, each segment
+asked for twice before the next, so a short extraction loses no more
+cues than with 0162 alone. After that each wait is twice the last, up
+to subtitle_vod_retry_max (30 s by default, at least 1 s), for as long
+as the media plays, and each try asks for the media's segment rather
+than the next one in order: a server back after minutes is not asked
+for every segment of them, behind the media and inline with its reads.
+A request still holds the media 2 s at most.
+
+An answer whose body stops (its read given up after 2 s) failed nothing:
+the reader moved on to the next segment at once, each such answer
+holding the media 2 s with no wait between them. It now fails as a
+request does: its cues so far are kept, and it is tried again on the
+same schedule. The failures count from the first one until a segment is
+read through (an open alone no longer resets them), and a seek or a
+reselection starts afresh.
+
+Only a local error (out of memory, a bug) ends a VOD subtitle track; a
+4xx or a garbled answer is tried on too. The tolerance still ends a live
+one. A slow server costs cues, not the track.
 
 subtitle_vod_retry_max is the probe.
 
 Our own patch.
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index 0507e88..400259b 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -173,6 +173,9 @@ struct playlist {
+@@ -173,6 +173,9 @@
      int64_t subtitle_retry_time;
      /* A VOD subtitle playlist's failed segment was asked for once more. */
      int subtitle_segment_retried;
@@ -38,35 +48,77 @@ index 0507e88..400259b 100644
      /* A VOD subtitle playlist starts at the media's segment at its next read
       * (opened, selected again, or after a seek). */
      int subtitle_follow_media;
-@@ -330,6 +333,7 @@ typedef struct HLSContext {
+@@ -330,6 +333,7 @@
      int seg_skip;
      int64_t live_reload_timeout;
      int subtitle_follow_media;      /* VOD subtitle playlists read along the media's segment */
 +    int64_t subtitle_vod_retry_max; /* the longest wait between a VOD subtitle playlist's tries */
      int vod_x_start;                /* a VOD playlist starts at its #EXT-X-START */
-     AVIOContext *playlist_pb;
-     HLSCryptoContext  crypto_ctx;
-@@ -2530,12 +2534,16 @@ static int read_data_subtitle_segment(void *opaque, uint8_t *buf, int buf_size)
+     int64_t master_start_offset;    /* the master's #EXT-X-START, if master_time_offset_flag */
+     int master_time_offset_flag;
+@@ -2517,6 +2521,25 @@
+     return ret;
+ }
+ 
++/* A subtitle segment that did not come (its request failed, or its answer
++ * stopped): it is skipped (read_subtitle_packet()), until segments of a live
++ * playlist have failed for as long as its reloads may: then the playlist
++ * failed. A VOD playlist's are tried on, ever less often, for as long as the
++ * media plays: a server extracting a long film's subtitles on the first
++ * request fails them for a minute or more. The failures count from the first
++ * one until a segment is read through. */
++static void subtitle_segment_failed(HLSContext *c, struct playlist *v,
++                                    int64_t start, int ret)
++{
++    if (!v->segment_error_time)
++        v->segment_error_time = start;
++    if (error_is_local(ret) ||
++        (!v->finished &&
++         av_gettime_relative() - v->segment_error_time >= live_reload_timeout(v, c)))
++        v->read_error = ret;
++    v->subtitle_segment_failed = 1;
++}
++
+ static int read_data_subtitle_segment(void *opaque, uint8_t *buf, int buf_size)
+ {
+     struct playlist *v = opaque;
+@@ -2540,23 +2563,24 @@
+                 return AVERROR_EXIT;
              av_log(v->parent, AV_LOG_WARNING, "Failed to open segment of playlist %d\n",
                     v->index);
-             /* A failed segment is skipped (read_subtitle_packet()), until
+-            /* A failed segment is skipped (read_subtitle_packet()), until
 -             * segments have failed for as long as a live playlist's reloads
 -             * may: then the playlist failed. */
-+             * segments of a live playlist have failed for as long as its
-+             * reloads may: then the playlist failed. A VOD playlist's are
-+             * tried on, ever less often, for as long as the media plays: a
-+             * server extracting a long film's subtitles on the first request
-+             * fails them for a minute or more. */
-             if (!v->segment_error_time)
-                 v->segment_error_time = open_start;
-             if (error_is_local(ret) ||
+-            if (!v->segment_error_time)
+-                v->segment_error_time = open_start;
+-            if (error_is_local(ret) ||
 -                av_gettime_relative() - v->segment_error_time >= live_reload_timeout(v, c))
-+                (!v->finished &&
-+                 av_gettime_relative() - v->segment_error_time >= live_reload_timeout(v, c)))
-                 v->read_error = ret;
-             v->subtitle_segment_failed = 1;
+-                v->read_error = ret;
+-            v->subtitle_segment_failed = 1;
++            subtitle_segment_failed(c, v, open_start, ret);
              return ret;
-@@ -2731,8 +2739,9 @@ static void unwrap_cue_pts(HLSContext *c, struct playlist *v, AVPacket *pkt)
+         }
+-        v->segment_error_time = 0;
+         if (v->first_read_seq_no < 0)
+             v->first_read_seq_no = v->cur_seq_no;
+     }
+ 
+-    return read_from_url(v, seg, buf, buf_size);
++    ret = read_from_url(v, seg, buf, buf_size);
++    /* An answer that stops (its read given up after 2 s) failed as a
++     * request does: its cues so far are kept, and it is asked for again
++     * (a cue that comes twice arrives once). */
++    if (ret < 0 && ret != AVERROR_EOF && ret != AVERROR_EXIT &&
++        !v->subtitle_segment_failed) {
++        av_log(v->parent, AV_LOG_WARNING, "Failed to read segment of playlist %d: %s\n",
++               v->index, av_err2str(ret));
++        subtitle_segment_failed(c, v, av_gettime_relative(), ret);
++    }
++    return ret;
+ }
+ 
+ static int nested_io_open(AVFormatContext *s, AVIOContext **pb, const char *url,
+@@ -2742,8 +2766,11 @@
      v->last_cue_pts = pkt->pts;
  }
  
@@ -75,10 +127,12 @@ index 0507e88..400259b 100644
 +/* The longest wait before a failed VOD subtitle segment is asked for again
 + * while its failures are younger than the live tolerance. */
 +#define SUBTITLE_VOD_RETRY_FIRST (4 * AV_TIME_BASE)
++/* The shortest: a playlist without a target duration waits that long too. */
++#define SUBTITLE_VOD_RETRY_MIN AV_TIME_BASE
  
  /* The start of a segment on its playlist's own time line: the durations of
   * the segments before it. */
-@@ -2889,8 +2898,13 @@ restart:
+@@ -2900,8 +2927,16 @@
       * that stalls holds the media for 2 s at most that often. A VOD
       * playlist asks for the failed segment once more first (a server slow
       * to make it, as Jellyfin extracting a subtitle on its first request),
@@ -89,26 +143,33 @@ index 0507e88..400259b 100644
 +     * often for as long as a live playlist's segments may fail (where the
 +     * track used to end), then twice as long after each failure, up to
 +     * subtitle_vod_retry_max, and never gives up: a slow server costs cues,
-+     * not the track, and a short extraction no more cues than before. Once
-+     * one opens, it reads on in order from there, behind the media. */
++     * not the track, and a short extraction no more cues than before. Each
++     * of those later tries asks for the media's segment, not the next one
++     * in order: a server back after minutes would otherwise be asked for
++     * every segment of them, behind the media, inline with its reads. Once
++     * one comes, it reads on in order from there. */
      if (v->subtitle_segment_failed) {
          v->subtitle_segment_failed = 0;
          if (v->finished && !v->subtitle_segment_retried) {
-@@ -2899,11 +2913,23 @@ restart:
+@@ -2910,11 +2945,28 @@
          } else {
              v->subtitle_segment_retried = 0;
          }
 -        v->subtitle_retry_time = av_gettime_relative() +
 -            (v->finished ? FFMIN(v->target_duration, SUBTITLE_VOD_RETRY_MAX) : v->target_duration);
 +        if (v->finished) {
-+            int64_t first = FFMIN(v->target_duration, SUBTITLE_VOD_RETRY_FIRST);
++            int64_t first = av_clip64(v->target_duration, SUBTITLE_VOD_RETRY_MIN,
++                                      SUBTITLE_VOD_RETRY_FIRST);
 +
-+            if (av_gettime_relative() - v->segment_error_time < live_reload_timeout(v, c))
++            if (av_gettime_relative() - v->segment_error_time < live_reload_timeout(v, c)) {
 +                v->subtitle_retry_wait = first;
-+            else
++            } else {
 +                v->subtitle_retry_wait = FFMAX(av_sat_add64(v->subtitle_retry_wait,
 +                                                            v->subtitle_retry_wait), first);
-+            v->subtitle_retry_wait = FFMIN(v->subtitle_retry_wait, c->subtitle_vod_retry_max);
++                v->subtitle_follow_media = 1;
++            }
++            v->subtitle_retry_wait = av_clip64(v->subtitle_retry_wait, SUBTITLE_VOD_RETRY_MIN,
++                                               c->subtitle_vod_retry_max);
 +        } else {
 +            v->subtitle_retry_wait = v->target_duration;
 +        }
@@ -117,10 +178,11 @@ index 0507e88..400259b 100644
      }
      v->subtitle_segment_retried = 0;
 +    v->subtitle_retry_wait = 0;
++    v->segment_error_time = 0;
  
      goto restart;
  }
-@@ -3718,6 +3744,7 @@ static int recheck_discard_flags(AVFormatContext *s)
+@@ -3731,6 +3783,7 @@
              pls->subtitle_segment_failed = 0;
              pls->subtitle_retry_time = 0;
              pls->subtitle_segment_retried = 0;
@@ -128,7 +190,7 @@ index 0507e88..400259b 100644
              pls->subtitle_follow_media = 1;
              pls->segment_boundary = 0;
              pls->pb.pub.eof_reached = 0;
-@@ -4374,6 +4401,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -4387,6 +4440,7 @@
          pls->subtitle_segment_failed = 0;
          pls->subtitle_retry_time = 0;
          pls->subtitle_segment_retried = 0;
@@ -136,12 +198,12 @@ index 0507e88..400259b 100644
          pls->subtitle_follow_media = 1;
          pls->read_error = 0;
          ff_format_io_close(pls->parent, &pls->input_next);
-@@ -4557,6 +4585,8 @@ static const AVOption hls_options[] = {
+@@ -4570,6 +4624,8 @@
          {"never",  "no playlist: return the error", 0, AV_OPT_TYPE_CONST, {.i64 = SEG_SKIP_NEVER}, 0, 0, FLAGS, .unit = "seg_skip"},
      {"live_reload_timeout", "How long a live playlist plays on while its reloads or segments fail, -1 for three target durations but at least 20 seconds",
          OFFSET(live_reload_timeout), AV_OPT_TYPE_DURATION, {.i64 = -1}, -1, INT64_MAX, FLAGS},
 +    {"subtitle_vod_retry_max", "The longest wait between tries of a VOD subtitle playlist whose segments fail",
-+        OFFSET(subtitle_vod_retry_max), AV_OPT_TYPE_DURATION, {.i64 = 30000000}, 0, INT64_MAX, FLAGS},
++        OFFSET(subtitle_vod_retry_max), AV_OPT_TYPE_DURATION, {.i64 = 30000000}, 1000000, INT64_MAX, FLAGS},
      {"vod_x_start", "Start a VOD playlist at the segment holding its #EXT-X-START",
          OFFSET(vod_x_start), AV_OPT_TYPE_BOOL, {.i64 = 1}, 0, 1, FLAGS},
      {"subtitle_follow_media", "Read a VOD subtitle playlist from the media's segment on, never ahead of it",

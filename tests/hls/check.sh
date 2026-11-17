@@ -266,29 +266,55 @@ check_xstart() { # 0163: a VOD playlist starts at the segment holding its #EXT-X
     # playlist (the segment muxer's offset). TIME-OFFSET 12.5: s12 is the
     # first segment asked for, the first packet at about 13.5 s, and a seek
     # to 7 s lands in s5 (the start rebased by the 12 s skipped, not
-    # counted from s12). -5: s15. 100, past the end: s19, the last one.
+    # counted from s12). -5: s15. 100, past the end: s19, the last one; -100,
+    # before the start: s0. 12, a segment's start: s12; 0: s0. A seek to 0
+    # reads s0. A master naming the offset, its media playlist none: s12.
     # vod_x_start=0, as stock FFmpeg: s0 first, read through.
-    for o in 12.5 -5 100; do
+    for o in 12.5 -5 100 -100 12 0; do
         run "xstart$o" "" "/vod/xstart$o.m3u8" -nofsi -maxtime 20
     done
     run xstart-seek "" /vod/xstart12.5.m3u8 -q -nofsi -maxtime 20 -ev +0.5:seek:7
+    run xstart-seek0 "" /vod/xstart12.5.m3u8 -q -nofsi -maxtime 20 -ev +0.5:seek:0
+    run xstart-master "" /vod/xmaster12.5.m3u8 -nofsi -maxtime 20
     run xstart-off "" /vod/xstart12.5.m3u8 -q -nofsi -maxtime 20 -o vod_x_start=0
     firstreq() { grep -o 'GET /vod/s[0-9]*\.ts ' "$OUT/$1.server.log" | head -1 | sed 's/[^0-9]//g'; }
     firstpts() { awk '$1 == "pkt" && $3 == 0 { print $4; exit }' "$OUT/$1.log"; }
     p=$(firstpts xstart12.5)
     [ "$(firstreq xstart12.5)" = 12 ] && [ "$(gets xstart12.5 /vod/s11.ts)" = 0 ] &&
         awk -v p="$p" 'BEGIN { exit !(p + 0 >= 13.3 && p + 0 <= 13.6) }'
-    result xstart-pos "TIME-OFFSET 12.5: s$(firstreq xstart12.5) asked for first, first packet at ${p:-none}" $?
+    ok=$?
+    result xstart-pos "TIME-OFFSET 12.5: s$(firstreq xstart12.5) asked for first, first packet at ${p:-none}" $ok
     [ "$(firstreq xstart-5)" = 15 ] && [ "$(gets xstart-5 /vod/s14.ts)" = 0 ]
-    result xstart-neg "TIME-OFFSET -5: s$(firstreq xstart-5) asked for first" $?
+    ok=$?
+    result xstart-neg "TIME-OFFSET -5: s$(firstreq xstart-5) asked for first" $ok
     [ "$(firstreq xstart100)" = 19 ] && grep -q '^end: End of file' "$OUT/xstart100.log"
-    result xstart-far "TIME-OFFSET 100, past the end: s$(firstreq xstart100) asked for first" $?
+    ok=$?
+    result xstart-far "TIME-OFFSET 100, past the end: s$(firstreq xstart100) asked for first" $ok
     s=$(first xstart-seek 0)
     [ "$(gets xstart-seek /vod/s5.ts)" = 1 ] && [ "$(gets xstart-seek /vod/s4.ts)" = 0 ] &&
         awk -v p="${s%% *}" 'BEGIN { exit !(p + 0 >= 6.3 && p + 0 <= 6.6) }'
-    result xstart-seek "a seek to 7 s after the start at 12.5: s5 asked for, first packet ${s:-none}" $?
+    ok=$?
+    result xstart-seek "a seek to 7 s after the start at 12.5: s5 asked for, first packet ${s:-none}" $ok
+    [ "$(firstreq xstart-100)" = 0 ]
+    ok=$?
+    result xstart-before "TIME-OFFSET -100, before the start: s$(firstreq xstart-100) asked for first" $ok
+    [ "$(firstreq xstart12)" = 12 ] && [ "$(gets xstart12 /vod/s11.ts)" = 0 ]
+    ok=$?
+    result xstart-edge "TIME-OFFSET 12, a segment's start: s$(firstreq xstart12) asked for first" $ok
+    [ "$(firstreq xstart0)" = 0 ]
+    ok=$?
+    result xstart-zero "TIME-OFFSET 0: s$(firstreq xstart0) asked for first" $ok
+    s=$(first xstart-seek0 0)
+    [ "$(gets xstart-seek0 /vod/s0.ts)" = 1 ] &&
+        awk -v p="${s%% *}" 'BEGIN { exit !(p + 0 >= 1.3 && p + 0 <= 1.6) }'
+    ok=$?
+    result xstart-seek0 "a seek to 0 after the start at 12.5: s0 asked for, first packet ${s:-none}" $ok
+    [ "$(firstreq xstart-master)" = 12 ] && [ "$(gets xstart-master /vod/s11.ts)" = 0 ]
+    ok=$?
+    result xstart-master "a master's TIME-OFFSET 12.5: s$(firstreq xstart-master) asked for first" $ok
     [ "$(firstreq xstart-off)" = 0 ] && [ "$(gets xstart-off /vod/s11.ts)" = 1 ]
-    result xstart-off "vod_x_start=0: s$(firstreq xstart-off) asked for first, as stock FFmpeg" $?
+    ok=$?
+    result xstart-off "vod_x_start=0: s$(firstreq xstart-off) asked for first, as stock FFmpeg" $ok
 }
 check_i52() { # 0101: a live init section failure fails its segment, not the input
     run i52-once "--init-fail 1" /livefmp4/index.m3u8 -q -maxtime 5 -o seg_max_retry=0 -o seg_skip=live

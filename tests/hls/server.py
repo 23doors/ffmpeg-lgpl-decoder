@@ -485,6 +485,13 @@ class H(BaseHTTPRequestHandler):
             p = "/live/" + p[len("/live/b/"):]
         if p == "/vod/index.m3u8":
             return self.send(200, vod_playlist("s%d.ts"), mpegurl)
+        if p.startswith("/vod/xmaster") and p.endswith(".m3u8"):
+            # /vod/xmaster<offset>.m3u8: a master naming #EXT-X-START at that offset, its
+            # media playlist none
+            offset = p[len("/vod/xmaster"):-len(".m3u8")]
+            return self.send(200, ("#EXTM3U\n#EXT-X-START:TIME-OFFSET=%s\n"
+                                   "#EXT-X-STREAM-INF:BANDWIDTH=400000,RESOLUTION=320x240\nindex.m3u8\n"
+                                   % offset).encode(), mpegurl)
         if p.startswith("/vod/xstart") and p.endswith(".m3u8"):
             # /vod/xstart<offset>.m3u8: the VOD playlist with #EXT-X-START at that offset
             offset = p[len("/vod/xstart"):-len(".m3u8")]
