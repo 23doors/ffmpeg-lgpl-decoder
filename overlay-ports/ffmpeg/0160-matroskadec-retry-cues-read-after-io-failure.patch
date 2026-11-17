@@ -15,10 +15,13 @@ or the read left an error on the AVIOContext: a network error, an
 interrupt), at their start or within them, now leaves them unread: what
 was read is dropped and they are read again at the next seek. An error
 that is not a network one (a 4xx) is given up on after three such reads,
-as before. Invalid data and a clean end (a truncated file whose cues lie
-past its end) still mark the index broken, so a local file reads on from
-its clusters as before. An error an earlier read left on the context is
-cleared for the seek, so it does not make a clean end look like I/O.
+as before. On Windows tcp's errors are winsock's codes (ff_neterrno(), a
+failed connect's SO_ERROR), so those count as network errors too
+(network.h brings in winsock2.h there). Invalid data and a clean end (a
+truncated file whose cues lie past its end) still mark the index broken,
+so a local file reads on from its clusters as before. An error an earlier
+read left on the context is cleared for the seek, so it does not make a
+clean end look like I/O.
 
 A seek that fails on I/O now fails with its error: the read of the cues,
 the read of the clusters on to the target, or the repositioning to the
@@ -30,13 +33,21 @@ from the last known cluster. A seek to a target within the clusters
 already read still lands.
 
 Our own patch (upstream FFmpeg master has the same code); upstreamable.
-Checked by tests/matroska (mkv-cues-*, mkv-loaded-*).
+Checked by tests/matroska (mkv-cues-*, mkv-loaded-*, mkv-classifier-*).
 
 diff --git a/libavformat/matroskadec.c b/libavformat/matroskadec.c
-index 28655ef..cfa4e18 100644
+index 28655ef..ad5aaff 100644
 --- a/libavformat/matroskadec.c
 +++ b/libavformat/matroskadec.c
-@@ -425,6 +425,16 @@ typedef struct MatroskaDemuxContext {
+@@ -65,6 +65,7 @@
+ #include "internal.h"
+ #include "isom.h"
+ #include "matroska.h"
++#include "network.h"
+ #include "oggdec.h"
+ /* For ff_codec_get_id(). */
+ #include "riff.h"
+@@ -425,6 +426,16 @@ typedef struct MatroskaDemuxContext {
      /* File has a CUES element, but we defer parsing until it is needed. */
      int cues_parsing_deferred;
  
@@ -53,7 +64,7 @@ index 28655ef..cfa4e18 100644
      /* Level1 elements and whether they were read yet */
      MatroskaLevel1Element level1_elems[64];
      int num_level1_elems;
-@@ -1917,6 +1927,31 @@ static void matroska_convert_tags(AVFormatContext *s)
+@@ -1917,6 +1928,31 @@ static void matroska_convert_tags(AVFormatContext *s)
      }
  }
  
@@ -85,7 +96,7 @@ index 28655ef..cfa4e18 100644
  static int matroska_parse_seekhead_entry(MatroskaDemuxContext *matroska,
                                           int64_t pos)
  {
-@@ -1926,26 +1961,8 @@ static int matroska_parse_seekhead_entry(MatroskaDemuxContext *matroska,
+@@ -1926,26 +1962,8 @@ static int matroska_parse_seekhead_entry(MatroskaDemuxContext *matroska,
      int ret2;
  
      /* seek */
@@ -114,7 +125,7 @@ index 28655ef..cfa4e18 100644
      /* Seek back - notice that in all instances where this is used
       * it is safe to set the level to 1. */
      ret2 = matroska_reset_status(matroska, saved_id, before_pos);
-@@ -2026,16 +2043,75 @@ static void matroska_add_index_entries(MatroskaDemuxContext *matroska)
+@@ -2026,16 +2044,83 @@ static void matroska_add_index_entries(MatroskaDemuxContext *matroska)
      }
  }
  
@@ -145,6 +156,14 @@ index 28655ef..cfa4e18 100644
 +#endif
 +#ifdef EHOSTUNREACH
 +           err == AVERROR(EHOSTUNREACH) ||
++#endif
++#if HAVE_WINSOCK2_H
++           /* tcp's errors on Windows are winsock's codes (ff_neterrno(),
++            * a failed connect's SO_ERROR), not the errno ones above. */
++           err == AVERROR(WSAECONNREFUSED) || err == AVERROR(WSAECONNRESET) ||
++           err == AVERROR(WSAECONNABORTED) || err == AVERROR(WSAETIMEDOUT) ||
++           err == AVERROR(WSAENETDOWN)     || err == AVERROR(WSAENETUNREACH) ||
++           err == AVERROR(WSAENETRESET)    || err == AVERROR(WSAEHOSTUNREACH) ||
 +#endif
 +           err == AVERROR_HTTP_SERVER_ERROR ||
 +           err == AVERROR_HTTP_TOO_MANY_REQUESTS;
@@ -193,7 +212,7 @@ index 28655ef..cfa4e18 100644
                  matroska->cues_parsing_deferred = -1;
              elem->parsed = 1;
              break;
-@@ -2043,6 +2119,7 @@ static void matroska_parse_cues(MatroskaDemuxContext *matroska) {
+@@ -2043,6 +2128,7 @@ static void matroska_parse_cues(MatroskaDemuxContext *matroska) {
      }
  
      matroska_add_index_entries(matroska);
@@ -201,7 +220,7 @@ index 28655ef..cfa4e18 100644
  }
  
  static int matroska_parse_content_encodings(MatroskaTrackEncoding *encodings,
-@@ -4323,6 +4400,23 @@ static int matroska_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -4323,6 +4409,23 @@ static int matroska_read_packet(AVFormatContext *s, AVPacket *pkt)
      MatroskaDemuxContext *matroska = s->priv_data;
      int ret = 0;
  
@@ -225,7 +244,7 @@ index 28655ef..cfa4e18 100644
      if (matroska->resync_pos == -1) {
          // This can only happen if generic seeking has been used.
          matroska->resync_pos = avio_tell(s->pb);
-@@ -4345,12 +4439,18 @@ static int matroska_read_seek(AVFormatContext *s, int stream_index,
+@@ -4345,12 +4448,18 @@ static int matroska_read_seek(AVFormatContext *s, int stream_index,
      MatroskaTrack *tracks = NULL;
      AVStream *st = s->streams[stream_index];
      FFStream *const sti = ffstream(st);
@@ -246,7 +265,7 @@ index 28655ef..cfa4e18 100644
      }
  
      if (!sti->nb_index_entries)
-@@ -4359,13 +4459,28 @@ static int matroska_read_seek(AVFormatContext *s, int stream_index,
+@@ -4359,13 +4468,28 @@ static int matroska_read_seek(AVFormatContext *s, int stream_index,
  
      if ((index = av_index_search_timestamp(st, timestamp, flags)) < 0 ||
           index == sti->nb_index_entries - 1) {
@@ -277,7 +296,7 @@ index 28655ef..cfa4e18 100644
      }
  
      matroska_clear_queue(matroska);
-@@ -4382,7 +4497,9 @@ static int matroska_read_seek(AVFormatContext *s, int stream_index,
+@@ -4382,7 +4506,9 @@ static int matroska_read_seek(AVFormatContext *s, int stream_index,
      }
  
      /* We seek to a level 1 element, so set the appropriate status. */
@@ -288,7 +307,7 @@ index 28655ef..cfa4e18 100644
      if (flags & AVSEEK_FLAG_ANY) {
          sti->skip_to_keyframe = 0;
          matroska->skip_to_timecode = timestamp;
-@@ -4393,6 +4510,8 @@ static int matroska_read_seek(AVFormatContext *s, int stream_index,
+@@ -4393,6 +4519,8 @@ static int matroska_read_seek(AVFormatContext *s, int stream_index,
      matroska->skip_to_keyframe = 1;
      matroska->done             = 0;
      avpriv_update_cur_dts(s, st, sti->index_entries[index].timestamp);
@@ -297,7 +316,7 @@ index 28655ef..cfa4e18 100644
      return 0;
  err:
      // slightly hackish but allows proper fallback to
-@@ -4403,7 +4522,14 @@ err:
+@@ -4403,7 +4531,14 @@ err:
      sti->skip_to_keyframe =
      matroska->skip_to_keyframe = 0;
      matroska->done = 0;

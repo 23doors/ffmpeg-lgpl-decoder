@@ -73,7 +73,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y build-essential curl python3 ffmpeg nasm zlib1g-dev
+          sudo apt-get install -y build-essential curl python3 ffmpeg nasm zlib1g-dev gcc-mingw-w64-x86-64
 
       - name: Build the harness
         shell: bash
@@ -85,6 +85,8 @@ jobs:
 
       - name: Run the fixture checks
         shell: bash
+        env:
+          REQUIRE_MINGW: "1"
         run: |
           set -euo pipefail
           sh tests/matroska/check.sh "${RUNNER_TEMP}/matroska"

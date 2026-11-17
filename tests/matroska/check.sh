@@ -13,7 +13,7 @@
 # mkv-variant-* checks hold what stock FFmpeg does.
 #
 # usage: tests/matroska/check.sh WORKDIR [CHECK...]
-#   checks: cues cues-noreconnect loaded truncated intact variants
+#   checks: cues cues-noreconnect loaded truncated intact variants classifier
 #   (default: all)
 set -u
 W=$(cd "$1" && pwd); shift
@@ -131,7 +131,57 @@ check_variants() {
     result mkv-variant-file "a local file: seeks to 90 and 30 s land there:$s" $ok
 }
 
-CHECKS=${*:-cues cues-noreconnect loaded truncated intact variants}
+# 0160's classifier of the cue read errors retried while the network is
+# away: the errors tcp and http fail with are transient, a 4xx, invalid data,
+# EOF and ENOMEM are not; on Windows also winsock's codes, which tcp returns
+# there (ff_neterrno(), a failed connect's SO_ERROR). Built on the host from
+# the patched matroskadec.c, once as is and once with winsock's codes
+# (wsa_codes.h); with mingw-w64 (x86_64-w64-mingw32-gcc) the function is also
+# compiled for Windows against the real network.h and winsock2.h, and
+# wsa_codes.h checked against it. REQUIRE_MINGW=1 fails without it.
+check_classifier() {
+    C="$OUT/classifier"; mkdir -p "$C"
+    sed -n '/^static int matroska_io_error_is_transient/,/^}/p' \
+        "$W/src/libavformat/matroskadec.c" > "$C/classifier_fn.c"
+    if [ ! -s "$C/classifier_fn.c" ]; then
+        result mkv-classifier "matroska_io_error_is_transient() is in matroskadec.c" 1
+        return
+    fi
+    for v in posix:0 winsock:1; do
+        name=mkv-classifier-${v%%:*}
+        if cc -Werror=implicit-function-declaration -DWINSOCK=${v##*:} -I"$C" -I"$HERE" \
+               -I"$W/build" -I"$W/src" -o "$C/${v%%:*}" "$HERE/classifier.c" \
+               > "$OUT/$name.log" 2>&1 &&
+           "$C/${v%%:*}" >> "$OUT/$name.log" 2>&1; then ok=0; else ok=1; fi
+        result "$name" "the errors are classified right ($(tail -1 "$OUT/$name.log"))" $ok
+    done
+    MINGW=${MINGW_CC:-x86_64-w64-mingw32-gcc}
+    if ! command -v "$MINGW" > /dev/null 2>&1; then
+        if [ "${REQUIRE_MINGW:-0}" = 1 ]; then
+            result mkv-classifier-mingw "$MINGW is installed" 1
+        else
+            echo "SKIP mkv-classifier-mingw: no $MINGW"
+        fi
+        return
+    fi
+    # the config.h items network.h and what it includes use on Windows
+    mkdir -p "$C/win"
+    printf '%s\n' '#define HAVE_WINSOCK2_H 1' '#define CONFIG_NETWORK 1' \
+        '#define HAVE_STRUCT_SOCKADDR_STORAGE 1' '#define HAVE_STRUCT_ADDRINFO 1' \
+        '#define HAVE_STRUCT_POLLFD 1' '#define HAVE_SOCKLEN_T 1' \
+        '#define HAVE_CLOSESOCKET 1' '#define HAVE_STRUCT_SOCKADDR_IN6 1' \
+        '#define HAVE_STRUCT_IPV6_MREQ 1' '#define HAVE_INET_ATON 0' \
+        '#define HAVE_DIRECT_H 1' '#define HAVE_IO_H 1' \
+        > "$C/win/config.h"
+    sed -n 's/^#define \(WSAE[A-Z]*\) *\([0-9]*\)$/_Static_assert(\1 == \2, "\1");/p' \
+        "$HERE/wsa_codes.h" > "$C/wsa_codes_check.h"
+    if "$MINGW" -std=c11 -Werror -c -I"$C/win" -I"$C" -I"$W/build" -I"$W/src" \
+           -o "$C/classifier_mingw.o" "$HERE/classifier_mingw.c" \
+           > "$OUT/mkv-classifier-mingw.log" 2>&1; then ok=0; else ok=1; fi
+    result mkv-classifier-mingw "it compiles for Windows against network.h, and winsock2.h has wsa_codes.h's values" $ok
+}
+
+CHECKS=${*:-cues cues-noreconnect loaded truncated intact variants classifier}
 for c in $CHECKS; do
     "check_$(echo "$c" | tr - _)"
 done
