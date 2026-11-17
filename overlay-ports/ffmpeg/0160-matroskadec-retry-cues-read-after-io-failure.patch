@@ -12,34 +12,48 @@ can be the whole film: once the network was back, a resume to 600 s of a
 
 A seek to the cues or a read of them that failed on I/O (the seek failed,
 or the read left an error on the AVIOContext: a network error, an
-interrupt) now leaves them unread: what was read is dropped and they are
-read again at the next seek. Invalid data and a clean end (a truncated
-file whose cues lie past its end) still mark the index broken, so a local
-file reads on from its clusters as before. Such a seek fails with the I/O
-error rather than read on from the last known cluster, and the generic
-search avformat falls back to fails with it too (the demuxer hands it to
-the search's first read), where it would read the file from its start.
-A seek to a target within the clusters already read still lands.
+interrupt), at their start or within them, now leaves them unread: what
+was read is dropped and they are read again at the next seek. An error
+that is not a network one (a 4xx) is given up on after three such reads,
+as before. Invalid data and a clean end (a truncated file whose cues lie
+past its end) still mark the index broken, so a local file reads on from
+its clusters as before. An error an earlier read left on the context is
+cleared for the seek, so it does not make a clean end look like I/O.
+
+A seek that fails on I/O now fails with its error: the read of the cues,
+the read of the clusters on to the target, or the repositioning to the
+cluster it lands on (whose failure was ignored: the seek reported success
+and the next read met the error, or the end of the file, there). The
+generic search avformat falls back to fails with it too (its first read,
+from where the search starts, returns it), where it would read the file
+from the last known cluster. A seek to a target within the clusters
+already read still lands.
 
 Our own patch (upstream FFmpeg master has the same code); upstreamable.
-Checked by tests/matroska (mkv-cues-*).
+Checked by tests/matroska (mkv-cues-*, mkv-loaded-*).
 
 diff --git a/libavformat/matroskadec.c b/libavformat/matroskadec.c
-index 28655ef..d881997 100644
+index 28655ef..cfa4e18 100644
 --- a/libavformat/matroskadec.c
 +++ b/libavformat/matroskadec.c
-@@ -425,6 +425,10 @@ typedef struct MatroskaDemuxContext {
+@@ -425,6 +425,16 @@ typedef struct MatroskaDemuxContext {
      /* File has a CUES element, but we defer parsing until it is needed. */
      int cues_parsing_deferred;
  
-+    /* The I/O error of a seek whose read of the CUES failed, handed to the
-+     * generic search's first read so that it fails the seek too. */
-+    int cues_seek_error;
++    /* The I/O error a seek failed with, handed to the first read of the
++     * generic search that follows it (from seek_error_pos) so that the
++     * search fails too rather than read the clusters to the target. */
++    int seek_error;
++    int64_t seek_error_pos;
++
++    /* Reads of the CUES that failed on I/O with an error that is not a
++     * network one, for the cap on reading them again. */
++    int cues_read_failures;
 +
      /* Level1 elements and whether they were read yet */
      MatroskaLevel1Element level1_elems[64];
      int num_level1_elems;
-@@ -1917,6 +1921,31 @@ static void matroska_convert_tags(AVFormatContext *s)
+@@ -1917,6 +1927,31 @@ static void matroska_convert_tags(AVFormatContext *s)
      }
  }
  
@@ -71,7 +85,7 @@ index 28655ef..d881997 100644
  static int matroska_parse_seekhead_entry(MatroskaDemuxContext *matroska,
                                           int64_t pos)
  {
-@@ -1926,26 +1955,8 @@ static int matroska_parse_seekhead_entry(MatroskaDemuxContext *matroska,
+@@ -1926,26 +1961,8 @@ static int matroska_parse_seekhead_entry(MatroskaDemuxContext *matroska,
      int ret2;
  
      /* seek */
@@ -100,11 +114,42 @@ index 28655ef..d881997 100644
      /* Seek back - notice that in all instances where this is used
       * it is safe to set the level to 1. */
      ret2 = matroska_reset_status(matroska, saved_id, before_pos);
-@@ -2026,16 +2037,36 @@ static void matroska_add_index_entries(MatroskaDemuxContext *matroska)
+@@ -2026,16 +2043,75 @@ static void matroska_add_index_entries(MatroskaDemuxContext *matroska)
      }
  }
  
 -static void matroska_parse_cues(MatroskaDemuxContext *matroska) {
++/* Whether an error of a read or a seek of the input is an I/O failure (a
++ * network error, an interrupt) rather than what the file holds: the read
++ * left an error on the AVIOContext. */
++static int matroska_io_failed(MatroskaDemuxContext *matroska, int ret)
++{
++    return ret < 0 && ret != AVERROR_INVALIDDATA &&
++           (ret == AVERROR_EXIT || matroska->ctx->pb->error < 0);
++}
++
++/* Whether an I/O failure may pass when the input's network is back. */
++static int matroska_io_error_is_transient(int err)
++{
++    return err == AVERROR_EXIT || err == AVERROR(EIO) ||
++           err == AVERROR(ETIMEDOUT) || err == AVERROR(ECONNRESET) ||
++           err == AVERROR(ECONNREFUSED) || err == AVERROR(EPIPE) ||
++#ifdef ECONNABORTED
++           err == AVERROR(ECONNABORTED) ||
++#endif
++#ifdef ENETDOWN
++           err == AVERROR(ENETDOWN) ||
++#endif
++#ifdef ENETUNREACH
++           err == AVERROR(ENETUNREACH) ||
++#endif
++#ifdef EHOSTUNREACH
++           err == AVERROR(EHOSTUNREACH) ||
++#endif
++           err == AVERROR_HTTP_SERVER_ERROR ||
++           err == AVERROR_HTTP_TOO_MANY_REQUESTS;
++}
++
 +static int matroska_parse_cues(MatroskaDemuxContext *matroska) {
      int i;
  
@@ -130,17 +175,25 @@ index 28655ef..d881997 100644
 +            /* A seek to the CUES or a read of them that failed on I/O (a
 +             * network error, an interrupt) says nothing about the index:
 +             * drop what was read and read them again at the next seek
-+             * rather than seek without them for good. */
-+            if (seek_ret < 0 || (ret < 0 && ret != AVERROR_INVALIDDATA && pb->error < 0)) {
-+                ebml_free(matroska_index, matroska);
-+                matroska->cues_parsing_deferred = 1;
-+                return seek_ret < 0 ? seek_ret : pb->error;
++             * rather than seek without them for good. An error that is
++             * not a network one (a 4xx) is given up on after three. */
++            if (seek_ret < 0 || matroska_io_failed(matroska, ret)) {
++                int err = seek_ret < 0 ? seek_ret : ret == AVERROR_EXIT ? ret : pb->error;
++                if (matroska_io_error_is_transient(err) ||
++                    ++matroska->cues_read_failures < 3) {
++                    ebml_free(matroska_index, matroska);
++                    matroska->cues_parsing_deferred = 1;
++                    /* ebml_parse() marks the CUES read once their header
++                     * is: a drop within them leaves them unread. */
++                    elem->parsed = 0;
++                    return err;
++                }
 +            }
 +            if (ret < 0)
                  matroska->cues_parsing_deferred = -1;
              elem->parsed = 1;
              break;
-@@ -2043,6 +2074,7 @@ static void matroska_parse_cues(MatroskaDemuxContext *matroska) {
+@@ -2043,6 +2119,7 @@ static void matroska_parse_cues(MatroskaDemuxContext *matroska) {
      }
  
      matroska_add_index_entries(matroska);
@@ -148,32 +201,41 @@ index 28655ef..d881997 100644
  }
  
  static int matroska_parse_content_encodings(MatroskaTrackEncoding *encodings,
-@@ -4323,6 +4355,17 @@ static int matroska_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -4323,6 +4400,23 @@ static int matroska_read_packet(AVFormatContext *s, AVPacket *pkt)
      MatroskaDemuxContext *matroska = s->priv_data;
      int ret = 0;
  
-+    if (matroska->cues_seek_error < 0) {
-+        ret = matroska->cues_seek_error;
-+        matroska->cues_seek_error = 0;
-+        // The generic search after a seek whose read of the CUES failed
-+        // would read the file from the last known cluster to the target:
-+        // fail it as the seek failed.
-+        if (matroska->resync_pos == -1)
++    if (matroska->seek_error < 0) {
++        ret = matroska->seek_error;
++        matroska->seek_error = 0;
++        // The generic search after a seek that failed on I/O would read
++        // the file from the last known cluster to the target: fail it as
++        // the seek failed (an I/O error of the context, as the search
++        // takes it). A read after a search that failed to get there takes
++        // no error.
++        if (matroska->resync_pos == -1 &&
++            avio_tell(s->pb) == matroska->seek_error_pos) {
++            if (s->pb->error >= 0)
++                s->pb->error = ret;
 +            return ret;
++        }
 +        ret = 0;
 +    }
 +
      if (matroska->resync_pos == -1) {
          // This can only happen if generic seeking has been used.
          matroska->resync_pos = avio_tell(s->pb);
-@@ -4345,12 +4388,15 @@ static int matroska_read_seek(AVFormatContext *s, int stream_index,
+@@ -4345,12 +4439,18 @@ static int matroska_read_seek(AVFormatContext *s, int stream_index,
      MatroskaTrack *tracks = NULL;
      AVStream *st = s->streams[stream_index];
      FFStream *const sti = ffstream(st);
 -    int i, index;
 +    int i, index, ret = -1;
++    int saved_error = s->pb->error;
  
-+    matroska->cues_seek_error = 0;
++    matroska->seek_error = 0;
++    /* An error an earlier read left on the context is not this seek's. */
++    s->pb->error = 0;
      /* Parse the CUES now since we need the index data to seek. */
      if (matroska->cues_parsing_deferred > 0) {
          matroska->cues_parsing_deferred = 0;
@@ -184,25 +246,69 @@ index 28655ef..d881997 100644
      }
  
      if (!sti->nb_index_entries)
-@@ -4359,6 +4405,11 @@ static int matroska_read_seek(AVFormatContext *s, int stream_index,
+@@ -4359,13 +4459,28 @@ static int matroska_read_seek(AVFormatContext *s, int stream_index,
  
      if ((index = av_index_search_timestamp(st, timestamp, flags)) < 0 ||
           index == sti->nb_index_entries - 1) {
+-        matroska_reset_status(matroska, 0, sti->index_entries[sti->nb_index_entries - 1].pos);
 +        /* Without the CUES, whose read failed and is tried again at the
 +         * next seek, only the clusters read so far are known: do not read
 +         * on from the last of them to the target. */
 +        if (matroska->cues_parsing_deferred > 0)
 +            goto err;
-         matroska_reset_status(matroska, 0, sti->index_entries[sti->nb_index_entries - 1].pos);
++        ret = matroska_reset_status(matroska, 0, sti->index_entries[sti->nb_index_entries - 1].pos);
++        if (ret < 0)
++            goto err;
          while ((index = av_index_search_timestamp(st, timestamp, flags)) < 0 ||
                 index == sti->nb_index_entries - 1) {
-@@ -4403,7 +4454,9 @@ err:
+             matroska_clear_queue(matroska);
+-            if (matroska_parse_cluster(matroska) < 0)
++            if ((ret = matroska_parse_cluster(matroska)) < 0) {
++                /* A read that failed on I/O did not get to the target. */
++                if (matroska_io_failed(matroska, ret)) {
++                    if (ret != AVERROR_EXIT)
++                        ret = s->pb->error;
++                    goto err;
++                }
+                 break;
++            }
+         }
++        ret = -1;
+     }
+ 
+     matroska_clear_queue(matroska);
+@@ -4382,7 +4497,9 @@ static int matroska_read_seek(AVFormatContext *s, int stream_index,
+     }
+ 
+     /* We seek to a level 1 element, so set the appropriate status. */
+-    matroska_reset_status(matroska, 0, sti->index_entries[index].pos);
++    ret = matroska_reset_status(matroska, 0, sti->index_entries[index].pos);
++    if (ret < 0)
++        goto err;
+     if (flags & AVSEEK_FLAG_ANY) {
+         sti->skip_to_keyframe = 0;
+         matroska->skip_to_timecode = timestamp;
+@@ -4393,6 +4510,8 @@ static int matroska_read_seek(AVFormatContext *s, int stream_index,
+     matroska->skip_to_keyframe = 1;
+     matroska->done             = 0;
+     avpriv_update_cur_dts(s, st, sti->index_entries[index].timestamp);
++    if (!s->pb->error)
++        s->pb->error = saved_error;
+     return 0;
+ err:
+     // slightly hackish but allows proper fallback to
+@@ -4403,7 +4522,14 @@ err:
      sti->skip_to_keyframe =
      matroska->skip_to_keyframe = 0;
      matroska->done = 0;
 -    return -1;
-+    if (matroska->cues_parsing_deferred > 0 && ret < 0 && ret != -1)
-+        matroska->cues_seek_error = ret;
++    if (ret < 0 && ret != -1) {
++        /* Where the generic search reads from. */
++        matroska->seek_error     = ret;
++        matroska->seek_error_pos = sti->nb_index_entries ?
++            sti->index_entries[sti->nb_index_entries - 1].pos :
++            ffformatcontext(s)->data_offset;
++    }
 +    return ret;
  }
  

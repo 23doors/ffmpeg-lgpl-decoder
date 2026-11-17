@@ -8,7 +8,7 @@
 #   LAST_PATCH  apply the series only up to this number (e.g. 0159), to see
 #               the checks fail without the later patches
 # Needs: curl, a C compiler, make, python3, an ffmpeg with libx264 on PATH
-# (fixture media only). Builds with make -j${JOBS:-4}.
+# (fixture media only; with libvpx for the WebM one). Builds with make -j${JOBS:-4}.
 set -eu
 W=$(mkdir -p "$1" && cd "$1" && pwd)
 LAST=${2:-9999}
@@ -60,4 +60,10 @@ if [ ! -f "$M/cues_end.mkv" ]; then
         -c:v libx264 -g 50 -keyint_min 50 -sc_threshold 0 -b:v 300k -an \
         "$M/cues_end.mkv"
 fi
+# the same film without cues (written to a pipe), with them at the front,
+# and as WebM (VP8) with them at the end
+[ -f "$M/no_cues.mkv" ] || ffmpeg -nostdin -v error -i "$M/cues_end.mkv" -c copy -f matroska - > "$M/no_cues.mkv"
+[ -f "$M/cues_front.mkv" ] || ffmpeg -nostdin -v error -i "$M/cues_end.mkv" -c copy -cues_to_front 1 "$M/cues_front.mkv"
+[ -f "$M/cues_end.webm" ] || ffmpeg -nostdin -v error -f lavfi -i testsrc=size=320x240:rate=25 -t 120 \
+    -c:v libvpx -g 50 -keyint_min 50 -b:v 300k -deadline realtime -cpu-used 8 -an "$M/cues_end.webm"
 echo "harness ready in $W"

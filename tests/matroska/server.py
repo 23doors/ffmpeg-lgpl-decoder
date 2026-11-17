@@ -2,13 +2,15 @@
 """A Range-capable file server whose network goes away at the Matroska cue read
 (check.sh).
 
-usage: server.py PORT FILE [--down-at-cues SECONDS:MODE]
-  --down-at-cues SECONDS:MODE  from the first request for the file's Cues on
-                               (a Range starting at their element), every
-                               request fails for SECONDS: MODE 503 answers
-                               503; cut sends a 206's headers and closes
-                               without the body (the request succeeds, the
-                               reads fail); close closes unanswered
+usage: server.py PORT FILE [--down-at-cues SECONDS:MODE[:DELAY]]
+  --down-at-cues SECONDS:MODE[:DELAY]
+                 DELAY seconds (default 0) after the first request for the
+                 file's Cues (a Range starting at their element), every
+                 request fails for SECONDS: MODE 503 answers 503; cut sends
+                 a 206's headers and closes without the body (the request
+                 succeeds, the reads fail); close closes unanswered; mid
+                 sends the first MID bytes (env, default 40) of the Cues
+                 request and closes, then answers 503
 Each request is logged as "GET START -> STATUS"; the Cues offset at the start.
 """
 import os
@@ -35,9 +37,12 @@ class Handler(BaseHTTPRequestHandler):
             start = int(rng[6:].split("-")[0] or 0)
         now = time.monotonic()
         if srv.down and start == srv.cues and srv.down_since is None:
-            srv.down_since = now
-        down = srv.down_since is not None and now - srv.down_since < srv.down[0]
+            srv.down_since = now + srv.down[2]
+        down = srv.down_since is not None and 0 <= now - srv.down_since < srv.down[0]
         mode = srv.down[1] if down else None
+        if mode == "mid":
+            mode = "503" if srv.mid_done or start != srv.cues else "mid"
+            srv.mid_done = True
         print("GET %d -> %s" % (start, mode or ("206" if rng else "200")), flush=True)
         if mode == "close":
             self.close_connection = True
@@ -67,6 +72,11 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True
         if mode == "cut":
             return
+        if mode == "mid":
+            self.wfile.write(srv.body[start:start + srv.mid])
+            self.wfile.flush()
+            self.connection.shutdown(socket.SHUT_RDWR)
+            return
         try:
             self.wfile.write(srv.body[start:])
         except (BrokenPipeError, ConnectionResetError):
@@ -79,10 +89,11 @@ def main():
     srv.body = open(path, "rb").read()
     srv.cues = srv.body.rfind(CUES_ID)
     srv.down, srv.down_since = None, None
+    srv.mid, srv.mid_done = int(os.environ.get("MID", "40")), False
     args = sys.argv[3:]
     if args[:1] == ["--down-at-cues"]:
-        seconds, mode = args[1].split(":")
-        srv.down = (float(seconds), mode)
+        seconds, mode, *delay = args[1].split(":")
+        srv.down = (float(seconds), mode, float(delay[0]) if delay else 0.0)
     print("cues at %d of %d" % (srv.cues, len(srv.body)), flush=True)
     print("listening", flush=True)
     srv.serve_forever()

@@ -5,13 +5,16 @@
 # Each check prints PASS or FAIL; the exit status is the number of failures.
 # With the series only up to 0159 (setup.sh WORKDIR 0159) the mkv-cues-*
 # checks fail (the seek during the outage lost the index: it read 2.5 MB of
-# clusters, or landed short of its target); with 0160 and not 0161 the
+# clusters, or landed short of its target) and so do the mkv-loaded-* ones
+# (a seek during an outage after the cues were read reported success and
+# landed past its target); with 0160 and not 0161 the
 # mkv-cues-noreconnect-* ones do (the generic search landed on the last
-# cluster read and reported success). mkv-truncated and mkv-intact hold what
-# stock FFmpeg does.
+# cluster read and reported success). mkv-truncated, mkv-intact and the
+# mkv-variant-* checks hold what stock FFmpeg does.
 #
 # usage: tests/matroska/check.sh WORKDIR [CHECK...]
-#   checks: cues cues-noreconnect truncated intact (default: all)
+#   checks: cues cues-noreconnect loaded truncated intact variants
+#   (default: all)
 set -u
 W=$(cd "$1" && pwd); shift
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -47,10 +50,11 @@ run() {
 result() { # NAME CONDITION-TEXT 0|1
     if [ "$3" = 0 ]; then echo "PASS $1: $2"; else echo "FAIL $1: $2"; FAIL=$((FAIL + 1)); fi
 }
-# landings NAME: 0 when every seek that succeeded landed right and the last
-# one landed; prints what each seek did
+# landings NAME [MAX]: 0 when every seek that succeeded landed right (within
+# MAX bytes, default MAX_BYTES) and the last one landed; prints what each
+# seek did
 landings() {
-    awk -v max=$MAX_BYTES '
+    awk -v max=${2:-$MAX_BYTES} '
         /^seek / { n++; ok = 0; t = $2 + 0; s = s " seek" n "(" t "):" $3 }
         /^landed / { p = substr($3, 5) + 0; b = substr($4, 7) + 0
                      s = s ",pts=" p ",bytes=" b
@@ -59,20 +63,36 @@ landings() {
         END { print s; exit !(n >= 2 && ok && !bad) }' "$OUT/$1.log"
 }
 
-# 0160: the cue read failed in the outage is read again at the next seek;
-# the seek during it fails or lands right, never reads on from the clusters
+# 0160: the cue read failed in the outage (at their start, or within them:
+# mid) is read again at the next seek; the seek during it fails or lands
+# right, never reads on from the clusters
 check_cues() {
-    for mode in cut 503 close; do
-        run "mkv-cues-$mode" cues_end.mkv "--down-at-cues 6:$mode" $RMPO -read 4 -seek 90 -pause 7000 -seek 90
+    # http's reconnects (4 s) see a drop within the cues through a short
+    # outage: mid's is longer
+    for mode in cut:5 503:5 close:5 mid:40; do
+        down=${mode#*:}; mode=${mode%:*}
+        run "mkv-cues-$mode" cues_end.mkv "--down-at-cues $down:$mode" $RMPO -read 4 -seek 90 -pause $(((down + 3) * 1000)) -seek 90
         s=$(landings "mkv-cues-$mode"); ok=$?
         result "mkv-cues-$mode" "a seek during the outage ($mode) fails or lands at 88-90 s within $MAX_BYTES bytes, the next lands there:$s" $ok
     done
 }
+# 0160: once the cues are read, a seek whose repositioning fails in an
+# outage fails, rather than report success and read on from where it was
+check_loaded() {
+    for mode in 503 close; do
+        run "mkv-loaded-$mode" cues_end.mkv "--down-at-cues 15:$mode:1.5" $RMPO -read 4 -seek 90 -pause 4000 -seek 30 -pause 15000 -seek 30
+        s=$(landings "mkv-loaded-$mode"); ok=$?
+        result "mkv-loaded-$mode" "the cues read, a seek during the outage ($mode) fails or lands at 28-30 s, the next lands there:$s" $ok
+    done
+}
 # 0161: without reconnects the generic search's read fails: the seek fails,
-# it does not land on the last cluster read
+# it does not land on the last cluster read. After a drop within the cues
+# (mid) the next seek finds their start in the read buffer and http without
+# a connection (it reconnects only on a seek): that seek fails too, the one
+# after it lands.
 check_cues_noreconnect() {
-    for mode in cut 503; do
-        run "mkv-cues-noreconnect-$mode" cues_end.mkv "--down-at-cues 2:$mode" -read 4 -seek 90 -pause 3000 -seek 90
+    for mode in cut 503 mid; do
+        run "mkv-cues-noreconnect-$mode" cues_end.mkv "--down-at-cues 2:$mode" -read 4 -seek 90 -pause 5000 -seek 90 -seek 90
         s=$(landings "mkv-cues-noreconnect-$mode"); ok=$?
         result "mkv-cues-noreconnect-$mode" "no reconnects ($mode): the seek during the outage fails, the next lands at 88-90 s:$s" $ok
     done
@@ -95,8 +115,23 @@ check_intact() {
     s=$(landings mkv-intact); ok=$?
     result mkv-intact "no outage: seeks to 90 and 30 s land there:$s" $ok
 }
+# files with no deferred cues, read from a file, or with the index ignored:
+# seeks to 90 and 30 s land there as with stock FFmpeg (without cues, or
+# ignoring them, by reading the clusters)
+check_variants() {
+    for v in "nocues no_cues.mkv 100000000" "front cues_front.mkv $MAX_BYTES" \
+             "webm cues_end.webm $MAX_BYTES" "ignidx cues_end.mkv 100000000 -o fflags=ignidx"; do
+        set -- $v; vname=mkv-variant-$1; vfile=$2; vmax=$3; shift 3
+        run "$vname" "$vfile" "" "$@" -read 4 -seek 90 -seek 30
+        s=$(landings "$vname" "$vmax"); ok=$?
+        result "$vname" "no outage: seeks to 90 and 30 s land there:$s" $ok
+    done
+    cap "$W/mkvseek" "$W/media/cues_end.mkv" -read 4 -seek 90 -seek 30 > "$OUT/mkv-variant-file.log" 2> "$OUT/mkv-variant-file.err.log"
+    s=$(landings mkv-variant-file); ok=$?
+    result mkv-variant-file "a local file: seeks to 90 and 30 s land there:$s" $ok
+}
 
-CHECKS=${*:-cues cues-noreconnect truncated intact}
+CHECKS=${*:-cues cues-noreconnect loaded truncated intact variants}
 for c in $CHECKS; do
     "check_$(echo "$c" | tr - _)"
 done

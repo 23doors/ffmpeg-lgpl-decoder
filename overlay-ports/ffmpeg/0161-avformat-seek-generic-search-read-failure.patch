@@ -8,15 +8,17 @@ A player waiting for its target then decodes and drops everything from
 there, or, on a network input that is still down, reads on into the
 failure as if the seek had landed.
 
-Return the read's error instead. The end of the file (the target past the
-last keyframe) and invalid data still land on the last entry, as before.
+Return the read's error when it is an I/O failure: an interrupt, or an
+error the read left on the AVIOContext. The end of the file (the target
+past the last keyframe), invalid data and other demuxer errors still land
+on the last entry, as before.
 
 Our own patch (upstream FFmpeg master has the same code); upstreamable.
 Checked by tests/matroska (mkv-cues-noreconnect-*: without it the seek
 during the outage reports success and its first read fails).
 
 diff --git a/libavformat/seek.c b/libavformat/seek.c
-index c0d9437..ac5eafa 100644
+index c0d9437..4f6ee3b 100644
 --- a/libavformat/seek.c
 +++ b/libavformat/seek.c
 @@ -542,6 +542,7 @@ static int seek_frame_generic(AVFormatContext *s, int stream_index,
@@ -35,15 +37,16 @@ index c0d9437..ac5eafa 100644
              do {
                  read_status = av_read_frame(s, pkt);
              } while (read_status == AVERROR(EAGAIN));
-@@ -576,6 +576,12 @@ static int seek_frame_generic(AVFormatContext *s, int stream_index,
+@@ -576,6 +576,13 @@ static int seek_frame_generic(AVFormatContext *s, int stream_index,
              }
              av_packet_unref(pkt);
          }
-+        /* A read that failed (a network error, an interrupt) did not reach
-+         * the target: landing on the last entry indexed before it would
-+         * report a seek that went nowhere near it. */
++        /* A read that failed on I/O (a network error, an interrupt) did
++         * not reach the target: landing on the last entry indexed before it
++         * would report a seek that went nowhere near it. Other errors (a
++         * truncated last packet) still land there. */
 +        if (read_status < 0 && read_status != AVERROR_EOF &&
-+            read_status != AVERROR_INVALIDDATA)
++            (read_status == AVERROR_EXIT || (s->pb && s->pb->error < 0)))
 +            return read_status;
          index = av_index_search_timestamp(st, timestamp, flags);
      }
