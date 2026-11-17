@@ -485,6 +485,10 @@ class H(BaseHTTPRequestHandler):
             p = "/live/" + p[len("/live/b/"):]
         if p == "/vod/index.m3u8":
             return self.send(200, vod_playlist("s%d.ts"), mpegurl)
+        if p.startswith("/vod/xstart") and p.endswith(".m3u8"):
+            # /vod/xstart<offset>.m3u8: the VOD playlist with #EXT-X-START at that offset
+            offset = p[len("/vod/xstart"):-len(".m3u8")]
+            return self.send(200, vod_playlist("s%d.ts", head="#EXT-X-START:TIME-OFFSET=%s\n" % offset), mpegurl)
         if p == "/vodfmp4/gapmap.m3u8":
             pl = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:1\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-MEDIA-SEQUENCE:0\n"
             for k in range(7):

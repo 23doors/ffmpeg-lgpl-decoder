@@ -1,0 +1,105 @@
+avformat/hls: start a VOD playlist at its #EXT-X-START
+
+A transcode started at an offset (Plex's start offset) lists the whole
+film, with #EXT-X-START:TIME-OFFSET at the offset, and answers every
+segment before it nearly empty (188 bytes of media, a bare WEBVTT
+header). The demuxer started a VOD playlist at its first segment, so:
+- the open read through hundreds of empty segments, one request each,
+  before the first frame (about 5 s at an offset of 600 s on Plex, 26 s
+  at 3600 s);
+- the stream's start was the offset's packet time, so a player's
+  position began at 0 there and its seeks, counted from that start,
+  landed that many segments early.
+
+RFC 8216 4.4.2.2 says a client SHOULD start at that offset. A VOD
+playlist now starts at the segment holding it on its time line (a
+negative offset counts from the end; one past either end means that
+end). A rendition that names none takes the first offset another
+finished playlist names, as they share the time line. The start is
+still the playlist's origin (the first packet's time less the segments
+skipped, as the existing first_read_seq_no rebase does), so a position
+is the film's and seeks map right.
+
+vod_x_start (default 1) turns it off; a player probes it. A live
+playlist keeps its own start rules.
+
+Our own patch.
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index f52eebc..0507e88 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -330,6 +330,7 @@ typedef struct HLSContext {
+     int seg_skip;
+     int64_t live_reload_timeout;
+     int subtitle_follow_media;      /* VOD subtitle playlists read along the media's segment */
++    int vod_x_start;                /* a VOD playlist starts at its #EXT-X-START */
+     AVIOContext *playlist_pb;
+     HLSCryptoContext  crypto_ctx;
+ 
+@@ -3072,6 +3073,46 @@ static int catch_up_from_keyframe(HLSContext *c, struct playlist *pls, int vid,
+     return 1;
+ }
+ 
++/* Where a VOD playlist starts: the segment holding its #EXT-X-START offset
++ * on its time line (RFC 8216 4.4.2.2: a client SHOULD start there; a negative
++ * offset counts from the end, one past either end means that end), or its
++ * first one. A rendition without its own takes the first offset another
++ * playlist names (they share the time line). A transcode started at an
++ * offset (Plex) lists the whole film and answers the segments before the
++ * offset empty: read from the first one, the media's read walked through
++ * hundreds of them at the open, its position started at 0 at the offset,
++ * and seeks, counted from that start, landed that many segments early. */
++static int64_t vod_start_seq_no(HLSContext *c, struct playlist *pls)
++{
++    const struct playlist *named = pls->time_offset_flag ? pls : NULL;
++    int64_t duration = 0, offset, start = 0;
++    int i;
++
++    for (i = 0; !named && i < c->n_playlists; i++)
++        if (c->playlists[i]->finished && c->playlists[i]->time_offset_flag)
++            named = c->playlists[i];
++    if (!c->vod_x_start || !named || !pls->n_segments)
++        return pls->start_seq_no;
++
++    for (i = 0; i < pls->n_segments; i++)
++        duration = av_sat_add64(duration, pls->segments[i]->duration);
++    offset = named->start_time_offset;
++    if (offset < 0)
++        offset = FFMAX(av_sat_add64(duration, offset), 0);
++    offset = FFMIN(offset, duration);
++
++    for (i = 0; i < pls->n_segments - 1; i++) {
++        if (av_sat_add64(start, pls->segments[i]->duration) > offset)
++            break;
++        start = av_sat_add64(start, pls->segments[i]->duration);
++    }
++    if (i)
++        av_log(pls->parent, AV_LOG_VERBOSE,
++               "Playlist %d starts at segment %"PRId64" (%.3f s), its #EXT-X-START\n",
++               pls->index, pls->start_seq_no + i, start / (double)AV_TIME_BASE);
++    return pls->start_seq_no + i;
++}
++
+ static int64_t select_cur_seq_no(HLSContext *c, struct playlist *pls)
+ {
+     int64_t seq_no;
+@@ -3143,8 +3184,7 @@ static int64_t select_cur_seq_no(HLSContext *c, struct playlist *pls)
+         return seq_no;
+     }
+ 
+-    /* Otherwise just start on the first segment. */
+-    return pls->start_seq_no;
++    return vod_start_seq_no(c, pls);
+ }
+ 
+ static void add_stream_to_programs(AVFormatContext *s, struct playlist *pls, AVStream *stream)
+@@ -4517,6 +4557,8 @@ static const AVOption hls_options[] = {
+         {"never",  "no playlist: return the error", 0, AV_OPT_TYPE_CONST, {.i64 = SEG_SKIP_NEVER}, 0, 0, FLAGS, .unit = "seg_skip"},
+     {"live_reload_timeout", "How long a live playlist plays on while its reloads or segments fail, -1 for three target durations but at least 20 seconds",
+         OFFSET(live_reload_timeout), AV_OPT_TYPE_DURATION, {.i64 = -1}, -1, INT64_MAX, FLAGS},
++    {"vod_x_start", "Start a VOD playlist at the segment holding its #EXT-X-START",
++        OFFSET(vod_x_start), AV_OPT_TYPE_BOOL, {.i64 = 1}, 0, 1, FLAGS},
+     {"subtitle_follow_media", "Read a VOD subtitle playlist from the media's segment on, never ahead of it",
+         OFFSET(subtitle_follow_media), AV_OPT_TYPE_BOOL, {.i64 = 1}, 0, 1, FLAGS},
+ #define EXPORT (FLAGS | AV_OPT_FLAG_EXPORT | AV_OPT_FLAG_READONLY)

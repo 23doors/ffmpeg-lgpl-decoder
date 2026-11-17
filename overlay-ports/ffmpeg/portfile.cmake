@@ -147,6 +147,12 @@ vcpkg_from_github(
         # never asks for one ahead of it; a failed VOD subtitle segment is
         # asked for once more. Probed by the subtitle_follow_media option.
         0162-hls-vod-subtitle-playlist-follows-the-media.patch
+        # hls (own): a VOD playlist starts at the segment holding its
+        # #EXT-X-START (probed by vod_x_start); a VOD subtitle playlist's
+        # failed segments are tried on with a backoff up to 30 s (probed by
+        # subtitle_vod_retry_max).
+        0163-hls-vod-playlist-starts-at-its-x-start.patch
+        0164-hls-vod-subtitle-retries-back-off.patch
 )
 
 if(SOURCE_PATH MATCHES " ")

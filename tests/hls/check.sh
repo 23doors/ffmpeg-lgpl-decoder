@@ -1,5 +1,5 @@
 #!/bin/sh
-# The fixture checks of patches 0098-0121 (and the I54 trace) against a
+# The fixture checks of patches 0098-0121 and 0163 (and the I54 trace) against a
 # harness built by setup.sh. Each check prints PASS or FAIL; the exit status
 # is the number of failures. With the series only up to 0097
 # (setup.sh WORKDIR 0097) all fail but xo-ipv6 (without 0104 the headers go
@@ -30,7 +30,7 @@
 # usage: tests/hls/check.sh WORKDIR [CHECK...]
 #   checks: b19 b20 trunc chunk-trailer sidx id3 i51 i52 bad-map vod-init init-dedup init-cut
 #           headers-origin i54 cut-body vswitch deselect disp conn-host cookies
-#           status-line bad-range crlf http-reply
+#           status-line bad-range crlf http-reply xstart
 #   (default: all)
 set -u
 W=$(cd "$1" && pwd); shift
@@ -260,6 +260,35 @@ check_vod_init() { # 0119: a finished playlist's init section failure is its seg
     last=$(field vod-init-503 last_pts0)
     grep -q '^end: End of file' "$OUT/vod-init-503.log" && awk -v l="$last" 'BEGIN { exit !(l + 0 >= 19) }'
     result vod-init-503 "a VOD's init section 503 once: its segment skipped, played to the end (last pts ${last:-none})" $?
+}
+check_xstart() { # 0163: a VOD playlist starts at the segment holding its #EXT-X-START
+    # 20 one-second segments, the media's pts about 1.5 s past their start on the
+    # playlist (the segment muxer's offset). TIME-OFFSET 12.5: s12 is the
+    # first segment asked for, the first packet at about 13.5 s, and a seek
+    # to 7 s lands in s5 (the start rebased by the 12 s skipped, not
+    # counted from s12). -5: s15. 100, past the end: s19, the last one.
+    # vod_x_start=0, as stock FFmpeg: s0 first, read through.
+    for o in 12.5 -5 100; do
+        run "xstart$o" "" "/vod/xstart$o.m3u8" -nofsi -maxtime 20
+    done
+    run xstart-seek "" /vod/xstart12.5.m3u8 -q -nofsi -maxtime 20 -ev +0.5:seek:7
+    run xstart-off "" /vod/xstart12.5.m3u8 -q -nofsi -maxtime 20 -o vod_x_start=0
+    firstreq() { grep -o 'GET /vod/s[0-9]*\.ts ' "$OUT/$1.server.log" | head -1 | sed 's/[^0-9]//g'; }
+    firstpts() { awk '$1 == "pkt" && $3 == 0 { print $4; exit }' "$OUT/$1.log"; }
+    p=$(firstpts xstart12.5)
+    [ "$(firstreq xstart12.5)" = 12 ] && [ "$(gets xstart12.5 /vod/s11.ts)" = 0 ] &&
+        awk -v p="$p" 'BEGIN { exit !(p + 0 >= 13.3 && p + 0 <= 13.6) }'
+    result xstart-pos "TIME-OFFSET 12.5: s$(firstreq xstart12.5) asked for first, first packet at ${p:-none}" $?
+    [ "$(firstreq xstart-5)" = 15 ] && [ "$(gets xstart-5 /vod/s14.ts)" = 0 ]
+    result xstart-neg "TIME-OFFSET -5: s$(firstreq xstart-5) asked for first" $?
+    [ "$(firstreq xstart100)" = 19 ] && grep -q '^end: End of file' "$OUT/xstart100.log"
+    result xstart-far "TIME-OFFSET 100, past the end: s$(firstreq xstart100) asked for first" $?
+    s=$(first xstart-seek 0)
+    [ "$(gets xstart-seek /vod/s5.ts)" = 1 ] && [ "$(gets xstart-seek /vod/s4.ts)" = 0 ] &&
+        awk -v p="${s%% *}" 'BEGIN { exit !(p + 0 >= 6.3 && p + 0 <= 6.6) }'
+    result xstart-seek "a seek to 7 s after the start at 12.5: s5 asked for, first packet ${s:-none}" $?
+    [ "$(firstreq xstart-off)" = 0 ] && [ "$(gets xstart-off /vod/s11.ts)" = 1 ]
+    result xstart-off "vod_x_start=0: s$(firstreq xstart-off) asked for first, as stock FFmpeg" $?
 }
 check_i52() { # 0101: a live init section failure fails its segment, not the input
     run i52-once "--init-fail 1" /livefmp4/index.m3u8 -q -maxtime 5 -o seg_max_retry=0 -o seg_skip=live
@@ -898,6 +927,6 @@ check_vswitch() { # 0113-0116: a video playlist needed anew starts at its segmen
     result afresh-late-audio "late discards, a -> a2 during playback: a2 at the position ($(first afresh-late-audio 1)), its packets a's (crc $got, $want)" $ok
 }
 
-CHECKS=${*:-b19 b20 trunc chunk_trailer sidx id3 i51 i52 bad_map vod_init init_dedup init_cut headers_origin i54 cut_body vswitch deselect disp conn_host cookies status_line bad_range crlf http_reply}
+CHECKS=${*:-b19 b20 trunc chunk_trailer sidx id3 i51 i52 bad_map vod_init init_dedup init_cut headers_origin i54 cut_body vswitch deselect disp conn_host cookies status_line bad_range crlf http_reply xstart}
 for c in $CHECKS; do "check_$(echo "$c" | tr - _)"; done
 exit $FAIL
